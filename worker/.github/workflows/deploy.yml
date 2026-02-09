@@ -1,0 +1,63 @@
+name: Deploy Worker to Cloudflare
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'worker/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy Cloudflare Worker
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wrangler
+        run: npm install -g wrangler
+
+      - name: Create wrangler.toml with secrets
+        working-directory: ./worker
+        run: |
+          cat > wrangler.toml << 'EOF'
+          name = "vpn-config-bot"
+          main = "worker.js"
+          compatibility_date = "2024-01-01"
+          
+          [triggers]
+          crons = ["0 * * * *"]
+          
+          [vars]
+          BOT_TOKEN = "${{ secrets.BOT_TOKEN }}"
+          ADMIN_CHAT_ID = "${{ secrets.ADMIN_CHAT_ID }}"
+          CHANNEL_ID = "${{ secrets.CHANNEL_ID }}"
+          DASHBOARD_USER = "${{ secrets.DASHBOARD_USER }}"
+          DASHBOARD_PASS = "${{ secrets.DASHBOARD_PASS }}"
+          
+          [[kv_namespaces]]
+          binding = "VPN_CACHE"
+          id = "${{ secrets.KV_NAMESPACE_ID }}"
+          EOF
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: './worker'
+          command: deploy
+
+      - name: Set Telegram Webhook
+        if: success()
+        run: |
+          WORKER_URL="https://vpn-config-bot.${{ secrets.CF_ACCOUNT_SUBDOMAIN }}.workers.dev"
+          curl -s "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/setWebhook?url=${WORKER_URL}/webhook"
+          echo "\n✅ Webhook set to: ${WORKER_URL}/webhook"
