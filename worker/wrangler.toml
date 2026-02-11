@@ -6,12 +6,12 @@ compatibility_date = "2024-01-01"
 crons = ["0 * * * *"]
 
 [vars]
-BOT_TOKEN = "8401999862:AAEKLblOg2kfCAG3L87L4Nmc79Mu9EY5Buw"
-ADMIN_CHAT_ID = "599762196"
-CHANNEL_ID = "-1002296795477"
-DASHBOARD_USER = "admin"
-DASHBOARD_PASS = "vpnbot2024"
+BOT_TOKEN = ""
+ADMIN_CHAT_ID = ""
+CHANNEL_ID = ""
+DASHBOARD_USER = ""
+DASHBOARD_PASS = ""
 
 [[kv_namespaces]]
 binding = "VPN_CACHE"
-id = "YOUR_KV_NAMESPACE_ID"
+id = ""
