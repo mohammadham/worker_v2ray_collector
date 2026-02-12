@@ -94,3 +94,39 @@
 
 ### توصیه:
 اگر نیاز به ویژگی‌های پیشرفته دارید، باید worker.js بروزرسانی شود.
+
+
+✅ ویژگی‌های پیاده‌سازی شده:
+ویژگی‌های قبلی (حفظ شده):
+
+    Webhook Handler - /webhook ✅
+    Dashboard API - /dashboard/api/* ✅
+    Dashboard HTML - /dashboard ✅
+    Set Webhook - /set-webhook ✅
+    Links Management - /links GET/POST/DELETE ✅
+    Channels Management - /channels GET/POST/DELETE ✅
+    Templates - /templates GET/POST ✅
+    Submissions - /submissions GET/POST approve/reject ✅
+    Test Config - /test POST ✅
+    Fetch Now - /fetch-now POST ✅
+
+ویژگی‌های جدید:
+
+    صفحه Portfolio - نمایش صفحه حرفه‌ای به جای متن ساده در /
+    سیستم Redirect - امکان ریدایرکت به آدرس دیگر بدون تغییر URL
+    سیستم Voting - لایک/دیسلایک با /vote
+    Delete Config - حذف مستقیم کانفیگ با /configs/:hash
+    Settings API - /settings GET/POST برای تنظیمات
+    Cleanup API - /cleanup POST برای حذف خودکار
+    Retest All - /retest-all POST برای تست مجدد همه کانفیگ‌ها
+    Pagination - صفحه‌بندی در /configs
+    Sorting - مرتب‌سازی بر اساس newest/best/latency/active
+    Rate Limiting - محدود کردن ارسال پیام‌های Telegram
+    Concurrency Control - محدود کردن همزمانی تست‌ها
+
+بهبودهای کد:
+
+    KV Caching - کش محلی برای کاهش درخواست‌های KV
+    Promise.allWithLimit - محدود کردن همزمانی برای جلوگیری از overload
+    Error Handling - بهبود مدیریت خطا در تمام بخش‌ها
+    Type Safety - استفاده از توابع کمکی برای سازگاری بهتر
