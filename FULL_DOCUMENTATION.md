@@ -127,3 +127,46 @@ Over time, configurations may die or become slow. The cleanup task runs daily, c
 - [ ] **Durable Objects**: Advanced rate limiting for users with a paid Cloudflare plan.
 - [ ] **Multi-Protocol**: Future support for WireGuard and OpenVPN profiles.
 - [ ] **Advanced Metrics**: Visual charts for uptime and popularity trends.
+
+---
+
+## 8. API Reference
+
+The bot provides a REST API for management and integration. All dashboard endpoints require a Bearer Token obtained via `/login`.
+
+### Authentication
+- **POST `/dashboard/api/login`**
+  - Body: `{"username": "...", "password": "..."}`
+  - Returns: `{"token": "..."}`
+
+### Management Endpoints (Auth Required)
+- **GET `/dashboard/api/stats`**: Get system statistics.
+- **GET `/dashboard/api/configs?sort=newest&limit=20&page=1`**: Fetch stored configs.
+- **POST `/dashboard/api/fetch-now`**: Trigger manual config scraping.
+- **POST `/dashboard/api/settings`**: Update bot settings.
+  - Body: `{"key": "all", "value": { ... }}`
+
+### Public Endpoints (No Auth)
+- **GET `/api/configs?limit=10`**
+  - Returns a simple list of currently active raw configurations.
+  - Example Response:
+    ```json
+    {
+      "count": 2,
+      "configs": ["vless://...", "vmess://..."]
+    }
+    ```
+
+---
+
+## 9. Admin Commands Reference
+
+Admins can control the bot directly via Telegram:
+
+- `/start`: Open Admin Menu.
+- `/check`: Force immediate scraping and distribution.
+- `/cleanup`: Manually trigger the removal of dead/old configs.
+- `/status`: View detailed KV and queue statistics.
+- `/add_link [URL]`: Add a new source link.
+- `/add_channel [ID]`: Add a new destination channel ID.
+- `/submit`: Enter submission mode to add a config manually.

@@ -639,15 +639,19 @@ async function checkAndDistribute(env) {
 
   const newConfigsToStore = [];
   let sentCount = 0;
+  let invalidCount = 0;
 
-  for (const item of allNew.slice(0, 20)) {
+  // Limit processing to 30 new configs per run to avoid timeout
+  for (const item of allNew.slice(0, 30)) {
     const testResult = await testConfig(item.config);
-    const votes = await getConfigVotes(env, item.hash);
 
-    if (testResult.status === "dead" && sentCount === 0) {
-      // If it's dead and we haven't found any good ones yet, maybe skip or just keep it
-      // but user wants valid ones.
+    // Strict Filtering: Only Active and Latency < 10,000ms
+    if (testResult.status !== "active" || testResult.latency >= 10000 || testResult.latency < 0) {
+      invalidCount++;
+      continue;
     }
+
+    const votes = await getConfigVotes(env, item.hash);
 
     newConfigsToStore.push({
       config: item.config, 
@@ -656,7 +660,7 @@ async function checkAndDistribute(env) {
       sources: item.sources,
       test_result: testResult, 
       created_at: new Date().toISOString(),
-      failed_tests: testResult.status === "dead" ? 1 : 0,
+      failed_tests: 0,
       ...extractServer(item.config)
     });
 
@@ -665,20 +669,22 @@ async function checkAndDistribute(env) {
         const msg = await formatMessage(env, item.config, testResult, votes, channel);
         const keyboard = configKeyboard(item.config, item.hash, channel);
         await sendTelegram(env, channel, msg, keyboard);
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise(r => setTimeout(r, 500)); // Slightly faster send
       } catch (e) { console.error(`Send error to ${channel}:`, e); }
     }
     sentCount++;
   }
 
-  const cleanedStored = await manageStorage(env, sentCount);
-  const finalConfigs = [...newConfigsToStore, ...cleanedStored];
-  await kvSet(env, "stored_configs", finalConfigs.slice(0, 1000));
-
-  if (sentCount > 0) {
-    await sendTelegram(env, env.ADMIN_CHAT_ID, `✅ ${sentCount} new configs distributed to ${channels.length} channel(s).`);
+  if (newConfigsToStore.length > 0) {
+    const cleanedStored = await manageStorage(env, newConfigsToStore.length);
+    const finalConfigs = [...newConfigsToStore, ...cleanedStored];
+    await kvSet(env, "stored_configs", finalConfigs.slice(0, 1000));
   }
-  return { new_configs: sentCount, total: allNew.length };
+
+  const summary = `✅ Summary:\n- Distributed: ${sentCount}\n- Skipped (Invalid): ${invalidCount}\n- Total Scanned: ${Math.min(allNew.length, 30)}`;
+  await sendTelegram(env, env.ADMIN_CHAT_ID, summary);
+
+  return { new_configs: sentCount, invalid: invalidCount, total: allNew.length };
 }
 
 // ======== Webhook Handler ========
@@ -910,6 +916,14 @@ async function handleCallback(env, callback) {
   } else if (data === "admin_channels" && isAdmin) {
     const ch = await kvGet(env, "channel_ids", []);
     await sendTelegram(env, chatId, "📺 *Channels:*\n" + ch.map((c, i) => `${i + 1}. \`${c}\``).join("\n"));
+  } else if (data === "admin_templates" && isAdmin) {
+    const templates = await kvGet(env, "message_templates", DEFAULT_TEMPLATES);
+    const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
+    let msg = `📝 *Templates* (Active: \`${settings.activeTemplate}\`)\n\n`;
+    for (const [key, val] of Object.entries(templates)) {
+      msg += `🔹 *${key.toUpperCase()}*:\n\`\`\`\n${val}\n\`\`\`\n`;
+    }
+    await sendTelegram(env, chatId, msg);
   } else if (data === "admin_status" && isAdmin) {
     const links = await kvGet(env, "source_links", []);
     const channels = await kvGet(env, "channel_ids", []);
@@ -943,7 +957,8 @@ async function handleCallback(env, callback) {
       const channels = await kvGet(env, "channel_ids", [env.CHANNEL_ID]);
       
       for (const ch of channels) {
-        const msg = await formatMessage(env, sub.config, testResult, votes, ch);
+        // Send user submissions "as-is" (raw monospaced)
+        const msg = `\`${sub.config}\``;
         await sendTelegram(env, ch, msg, configKeyboard(sub.config, h, ch));
         await new Promise(r => setTimeout(r, 1000));
       }
@@ -1479,7 +1494,8 @@ async function handleDashboardAPI(env, request, path) {
       const h = hashConfig(config);
       const channels = await kvGet(env, "channel_ids", [env.CHANNEL_ID]);
       for (const ch of channels) {
-        const msg = await formatMessage(env, config, testResult, null, ch);
+        // Send user submissions "as-is" (raw monospaced)
+        const msg = `\`${config}\``;
         await sendTelegram(env, ch, msg, configKeyboard(config, h, ch));
       }
       sub.status = "approved";
@@ -1622,6 +1638,17 @@ export default {
       } catch (e) {
         return new Response(`Error: ${e.message}`, { status: 500 });
       }
+    }
+
+    // Public API for Configs
+    if (url.pathname === "/api/configs") {
+      const limit = Math.min(parseInt(url.searchParams.get("limit")) || 10, 100);
+      const stored = await kvGet(env, "stored_configs", []);
+      const active = stored.filter(c => c.test_result?.status === "active").slice(0, limit);
+      return jsonResp({
+        count: active.length,
+        configs: active.map(c => c.config)
+      });
     }
 
     // Dashboard API - API موجود قبلی با بهبود
