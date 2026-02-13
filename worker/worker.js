@@ -177,10 +177,33 @@ function detectType(config) {
   return "unknown";
 }
 
+function getCoreConfig(config) {
+  try {
+    if (config.startsWith("vmess://")) {
+      const b64 = config.replace("vmess://", "").trim();
+      const decoded = atob(b64);
+      const data = JSON.parse(decoded);
+      const coreData = { ...data };
+      delete coreData.ps;
+      // Sort keys to ensure consistent JSON string regardless of original order
+      const sortedData = Object.keys(coreData).sort().reduce((obj, key) => {
+        obj[key] = coreData[key];
+        return obj;
+      }, {});
+      return "vmess://" + btoa(JSON.stringify(sortedData));
+    }
+    // For VLESS, Trojan, SS, the core is everything before the '#'
+    return config.split('#')[0];
+  } catch (e) {
+    return config.split('#')[0] || config;
+  }
+}
+
 function hashConfig(config) {
+  const core = getCoreConfig(config);
   let hash = 0;
-  for (let i = 0; i < config.length; i++) {
-    const c = config.charCodeAt(i);
+  for (let i = 0; i < core.length; i++) {
+    const c = core.charCodeAt(i);
     hash = ((hash << 5) - hash) + c;
     hash |= 0;
   }
@@ -455,6 +478,56 @@ async function formatMessage(env, config, testResult, votes = null, channelInfo 
 }
 
 // ======== Cleanup Logic ========
+async function manageStorage(env, newCount) {
+  const MAX_CONFIGS = 1000;
+  let stored = await kvGet(env, "stored_configs", []);
+
+  if (stored.length + newCount <= MAX_CONFIGS) return stored;
+
+  const target = MAX_CONFIGS - newCount;
+  const now = Date.now();
+  const TEN_DAYS = 10 * 24 * 60 * 60 * 1000;
+
+  // Stage 1: Remove Dead
+  stored = stored.filter(c => c.test_result?.status !== "dead");
+  if (stored.length <= target) return stored;
+
+  // Stage 2: Remove Older than 10 days
+  stored = stored.filter(c => {
+    const age = now - new Date(c.created_at).getTime();
+    return isNaN(age) || age <= TEN_DAYS;
+  });
+  if (stored.length <= target) return stored;
+
+  // Stage 3: Remove High Latency (High Ping)
+  // Sort by latency descending (highest first)
+  stored.sort((a, b) => (b.test_result?.latency || 9999) - (a.test_result?.latency || 9999));
+  while (stored.length > target && (stored[0].test_result?.latency || 0) > 2000) {
+    stored.shift();
+  }
+  if (stored.length <= target) return stored;
+
+  // Stage 4: Retest oldest and remove failed
+  // Sort by created_at ascending (oldest first)
+  stored.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  for (let i = 0; i < stored.length && stored.length > target; i++) {
+    const testResult = await testConfig(stored[i].config);
+    if (testResult.status === "dead") {
+       stored.splice(i, 1);
+       i--;
+    }
+  }
+  if (stored.length <= target) return stored;
+
+  // Stage 5: Remove oldest (FIFO)
+  stored.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  while (stored.length > target) {
+    stored.shift();
+  }
+
+  return stored;
+}
+
 async function cleanupConfigs(env) {
   const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
   const stored = await kvGet(env, "stored_configs", []);
@@ -465,14 +538,17 @@ async function cleanupConfigs(env) {
   for (const config of stored) {
     let shouldRemove = false;
     
-    // 1. Check Age
+    // 1. Check Age (Standard 10-day rule from user)
     const created = new Date(config.created_at).getTime();
     if (!isNaN(created)) {
       const daysSinceCreated = (now - created) / (1000 * 60 * 60 * 24);
       const votes = await getConfigVotes(env, config.hash);
       const hasLikes = votes.likes.length >= (settings.minLikesToKeep || 1);
 
-      if (daysSinceCreated > (settings.autoDeleteDays || 7) && !hasLikes) {
+      // If older than 10 days and no significant likes, or older than autoDeleteDays
+      if (daysSinceCreated > 10 && !hasLikes) {
+        shouldRemove = true;
+      } else if (daysSinceCreated > (settings.autoDeleteDays || 15) && !hasLikes) {
         shouldRemove = true;
       }
     }
@@ -561,22 +637,19 @@ async function checkAndDistribute(env) {
   if (cache.length > 500) cache = cache.slice(-500);
   await kvSet(env, "configs_cache", cache);
 
-  const storedConfigs = await kvGet(env, "stored_configs", []);
+  const newConfigsToStore = [];
   let sentCount = 0;
 
   for (const item of allNew.slice(0, 20)) {
     const testResult = await testConfig(item.config);
     const votes = await getConfigVotes(env, item.hash);
 
-    if (testResult.status === "dead") {
-      const existing = storedConfigs.find(c => c.hash === item.hash);
-      if (existing) {
-        existing.failed_tests = (existing.failed_tests || 0) + 1;
-        if (existing.failed_tests >= 1000) continue;
-      }
+    if (testResult.status === "dead" && sentCount === 0) {
+      // If it's dead and we haven't found any good ones yet, maybe skip or just keep it
+      // but user wants valid ones.
     }
 
-    storedConfigs.unshift({
+    newConfigsToStore.push({
       config: item.config, 
       hash: item.hash, 
       type: detectType(item.config),
@@ -598,8 +671,9 @@ async function checkAndDistribute(env) {
     sentCount++;
   }
 
-  if (storedConfigs.length > 200) storedConfigs.length = 200;
-  await kvSet(env, "stored_configs", storedConfigs);
+  const cleanedStored = await manageStorage(env, sentCount);
+  const finalConfigs = [...newConfigsToStore, ...cleanedStored];
+  await kvSet(env, "stored_configs", finalConfigs.slice(0, 1000));
 
   if (sentCount > 0) {
     await sendTelegram(env, env.ADMIN_CHAT_ID, `✅ ${sentCount} new configs distributed to ${channels.length} channel(s).`);
@@ -876,6 +950,21 @@ async function handleCallback(env, callback) {
       
       sub.status = "approved";
       await kvSet(env, "submissions", subs);
+
+      // Add to stored configs
+      const cleaned = await manageStorage(env, 1);
+      const newEntry = {
+        config: sub.config,
+        hash: h,
+        type: sub.type,
+        sources: sub.sources,
+        test_result: testResult,
+        created_at: new Date().toISOString(),
+        failed_tests: testResult.status === "dead" ? 1 : 0,
+        ...extractServer(sub.config)
+      };
+      await kvSet(env, "stored_configs", [newEntry, ...cleaned]);
+
       await sendTelegram(env, chatId, "✅ Approved and published!");
     }
   } else if (data.startsWith("reject_") && isAdmin) {
@@ -1387,14 +1476,29 @@ async function handleDashboardAPI(env, request, path) {
     const sub = subs.find(s => s.config === config && s.status === "pending");
     if (sub) {
       const testResult = await testConfig(config);
-      const channels = await kvGet(env, "channel_ids", [env.CHANNEL_ID]);
       const h = hashConfig(config);
+      const channels = await kvGet(env, "channel_ids", [env.CHANNEL_ID]);
       for (const ch of channels) {
         const msg = await formatMessage(env, config, testResult, null, ch);
         await sendTelegram(env, ch, msg, configKeyboard(config, h, ch));
       }
       sub.status = "approved";
       await kvSet(env, "submissions", subs);
+
+      // Add to stored configs
+      const cleaned = await manageStorage(env, 1);
+      const newEntry = {
+        config: sub.config,
+        hash: h,
+        type: sub.type,
+        sources: sub.sources,
+        test_result: testResult,
+        created_at: new Date().toISOString(),
+        failed_tests: testResult.status === "dead" ? 1 : 0,
+        ...extractServer(sub.config)
+      };
+      await kvSet(env, "stored_configs", [newEntry, ...cleaned]);
+
       return jsonResp({ status: "approved", test_result: testResult });
     }
     return jsonResp({ error: "Not found" }, 404);

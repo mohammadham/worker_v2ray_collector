@@ -96,6 +96,16 @@ Over time, configurations may die or become slow. The cleanup task runs daily, c
 - **Parsing**: Robust extraction using the `URL` API and safe Base64/JSON parsing for complex protocols like VMess.
 - **Testing**: Dual-stage testing (DNS followed by HTTP/HTTPS HEAD) ensures high accuracy of "Active" status.
 
+### 5.3 Storage & Deduplication Policies
+- **Storage Limit**: The bot maintains a strict limit of **1,000 configurations** in KV.
+- **Smart Deduplication**: Configurations are compared based on their core connection parameters (Host, Port, ID, Cipher). Any text after the `#` symbol or the `ps` field in VMess is ignored during comparison.
+- **Auto-Cleanup Pipeline**: When the storage limit is reached, the bot performs a 5-stage cleanup:
+  1.  **Remove Dead**: Delete all configs marked as "dead".
+  2.  **Age Check**: Delete configs older than **10 days**.
+  3.  **Latency Check**: Delete configs with high latency (ping > 2000ms).
+  4.  **Proactive Testing**: Retest oldest configs and remove those that fail.
+  5.  **FIFO**: Remove oldest configs if still over the limit.
+
 ---
 
 ## 6. Strengths & Weaknesses
