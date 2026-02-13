@@ -9,11 +9,11 @@ const CONFIG_PATTERNS = [
 ];
 
 const DEFAULT_TEMPLATES = {
-  vless: "🟢 *VLESS Config*\n🌍 Server: {server}\n📊 Status: {status}\n⭐ Rating: {rating}",
-  vmess: "🔵 *VMess Config*\n🌍 Server: {server}\n📊 Status: {status}\n⭐ Rating: {rating}",
-  trojan: "🔴 *Trojan Config*\n🌍 Server: {server}\n📊 Status: {status}\n⭐ Rating: {rating}",
-  ss: "🟡 *Shadowsocks Config*\n🌍 Server: {server}\n📊 Status: {status}\n⭐ Rating: {rating}",
-  default: "⚪ *VPN Config*\n🌍 Server: {server}\n📊 Status: {status}\n⭐ Rating: {rating}"
+  vless: "🟢 *VLESS Config*\n🌍 Server: {server}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}",
+  vmess: "🔵 *VMess Config*\n🌍 Server: {server}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}",
+  trojan: "🔴 *Trojan Config*\n🌍 Server: {server}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}",
+  ss: "🟡 *Shadowsocks Config*\n🌍 Server: {server}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}",
+  default: "⚪ *VPN Config*\n🌍 Server: {server}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}"
 };
 
 const DEFAULT_SETTINGS = {
@@ -40,7 +40,7 @@ async function kvGet(env, key, defaultVal = null) {
   
   try {
     const val = await env.VPN_CACHE.get(key, "json");
-    const result = val !== null ? val : defaultVal;
+    const result = (val !== null && val !== undefined) ? val : defaultVal;
     KV_CACHE.set(key, { value: result, time: Date.now() });
     return result;
   } catch (e) { 
@@ -191,33 +191,61 @@ function extractServer(config) {
   const type = detectType(config);
   try {
     if (type === "vmess") {
-      const b64 = config.replace("vmess://", "");
-      const data = JSON.parse(atob(b64));
-      return { host: data.add || "", port: parseInt(data.port) || 443 };
-    }
-    if (type === "vless" || type === "trojan") {
-      const part = config.split("://")[1];
-      const atSplit = part.split("@");
-      if (atSplit.length > 1) {
-        const hp = atSplit[1].split("?")[0].split("#")[0];
-        if (hp.includes(":")) {
-          const [host, port] = hp.split(/:\/?/);
-          return { host: host.replace(/[\[\]]/g, ""), port: parseInt(port) || 443 };
-        }
+      const b64 = config.replace("vmess://", "").trim();
+      try {
+        const data = JSON.parse(atob(b64));
+        return {
+          host: data.add || data.host || "",
+          port: parseInt(data.port) || 443,
+          remark: data.ps || ""
+        };
+      } catch (e) {
+        // Handle potential base64 padding issues or malformed JSON
+        return { host: null, port: null };
       }
     }
+
+    if (type === "vless" || type === "trojan") {
+      const url = new URL(config.replace("vless://", "http://").replace("trojan://", "http://"));
+      return {
+        host: url.hostname.replace(/[\[\]]/g, ""),
+        port: parseInt(url.port) || 443,
+        remark: decodeURIComponent(url.hash.substring(1))
+      };
+    }
+
     if (type === "ss") {
-      const part = config.replace("ss://", "");
+      let part = config.replace("ss://", "");
+      let remark = "";
+      if (part.includes("#")) {
+        const split = part.split("#");
+        part = split[0];
+        remark = decodeURIComponent(split[1]);
+      }
+
       if (part.includes("@")) {
-        const hp = part.split("@")[1].split("?")[0].split("#")[0];
+        const [auth, server] = part.split("@");
+        const hp = server.split("?")[0];
         if (hp.includes(":")) {
           const [host, port] = hp.split(":");
-          return { host, port: parseInt(port) || 443 };
+          return { host, port: parseInt(port) || 443, remark };
         }
+      } else {
+        // Legacy SS links are often full base64
+        try {
+          const decoded = atob(part);
+          if (decoded.includes("@")) {
+            const server = decoded.split("@")[1];
+            const [host, port] = server.split(":");
+            return { host, port: parseInt(port) || 443, remark };
+          }
+        } catch {}
       }
     }
-  } catch {}
-  return { host: null, port: null };
+  } catch (e) {
+    console.error("Parse error:", e);
+  }
+  return { host: null, port: null, remark: "" };
 }
 
 function extractChannelSource(text, config) {
@@ -254,6 +282,22 @@ function extractChannelSource(text, config) {
   return [...new Set(sources)].slice(0, 3);
 }
 
+async function fetchWithTimeout(url, options = {}, timeout = 5000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    clearTimeout(id);
+    return response;
+  } catch (e) {
+    clearTimeout(id);
+    throw e;
+  }
+}
+
 async function testConfig(config) {
   const { host, port } = extractServer(config);
   if (!host) return { 
@@ -274,47 +318,41 @@ async function testConfig(config) {
     timestamp: new Date().toISOString()
   };
 
+  // 1. DNS Check
   try {
-    const dnsResp = await fetch(`https://cloudflare-dns.com/dns-query?name=${host}&type=A`, {
-      headers: { "Accept": "application/dns-json" },
-      signal: AbortSignal.timeout(3000)
-    });
+    const dnsResp = await fetchWithTimeout(`https://cloudflare-dns.com/dns-query?name=${host}&type=A`, {
+      headers: { "Accept": "application/dns-json" }
+    }, 3000);
     const dnsData = await dnsResp.json();
     if (dnsData.Answer && dnsData.Answer.length > 0) {
       result.dns = true;
     }
-  } catch {}
+  } catch (e) {}
 
+  // 2. TCP/HTTPS Check
   if (result.dns) {
     try {
       const start = Date.now();
-      const resp = await fetch(`https://${host}:${port}`, {
+      // Try HTTPS first
+      let resp = await fetchWithTimeout(`https://${host}:${port}`, {
         method: "HEAD",
-        signal: AbortSignal.timeout(5000),
         cf: { cacheTtl: 0 }
-      }).catch(() => null);
-      const elapsed = Date.now() - start;
+      }, 5000).catch(() => null);
       
+      // If HTTPS fails, try HTTP
+      if (!resp) {
+        resp = await fetchWithTimeout(`http://${host}:${port}`, {
+          method: "HEAD",
+          cf: { cacheTtl: 0 }
+        }, 5000).catch(() => null);
+      }
+
+      const elapsed = Date.now() - start;
       if (resp) {
         result.tcp = true;
         result.latency = elapsed;
       }
-    } catch {}
-  }
-
-  if (!result.tcp && result.dns) {
-    try {
-      const start = Date.now();
-      const resp = await fetch(`http://${host}:${port}`, {
-        method: "HEAD",
-        signal: AbortSignal.timeout(5000),
-        cf: { cacheTtl: 0 }
-      }).catch(() => null);
-      if (resp) {
-        result.tcp = true;
-        result.latency = Date.now() - start;
-      }
-    } catch {}
+    } catch (e) {}
   }
 
   result.status = result.tcp ? "active" : result.dns ? "dns_only" : "dead";
@@ -369,17 +407,27 @@ function adminMenu() {
   ]};
 }
 
-function configKeyboard(config, hash) {
+function configKeyboard(config, hash, channelInfo = null) {
   const type = detectType(config);
+  let shareUrl = `https://t.me/share/url?url=${encodeURIComponent(config)}`;
+
+  if (channelInfo) {
+    if (String(channelInfo).startsWith('@')) {
+      shareUrl = `https://t.me/${channelInfo.substring(1)}`;
+    } else if (String(channelInfo).startsWith('-100')) {
+      // For private channels we can't easily link without username or invite link
+      // But we can link to the channel if we have a username.
+    }
+  }
+
   return { inline_keyboard: [
-    [{ text: `📋 Copy ${type.toUpperCase()}`, callback_data: `copy_${hash}` }],
     [{ text: "👍 Like", callback_data: `like_${hash}` }, { text: "👎 Dislike", callback_data: `dislike_${hash}` }],
-    [{ text: "📤 Share", callback_data: `share_${hash}` }, { text: "📱 Open", url: `https://t.me/share/url?url=${encodeURIComponent(config.substring(0, 200))}` }]
+    [{ text: "📤 Share", url: shareUrl }, { text: "📱 Open", url: `https://t.me/share/url?url=${encodeURIComponent(config)}` }]
   ]};
 }
 
 // ======== Format Message ========
-async function formatMessage(env, config, testResult, votes = null) {
+async function formatMessage(env, config, testResult, votes = null, channelInfo = null) {
   const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
   const templates = await kvGet(env, "message_templates", DEFAULT_TEMPLATES);
   
@@ -394,44 +442,54 @@ async function formatMessage(env, config, testResult, votes = null) {
   const emoji = testResult.status === "active" ? "✅" : testResult.status === "dns_only" ? "⚠️" : "❌";
   
   const rating = votes ? `👍 ${votes.likes.length} | 👎 ${votes.dislikes.length}` : "N/A";
+  const channel = channelInfo || "VPN Config Bot";
   
   return template
-    .replace("{type}", detectType(config).toUpperCase())
-    .replace("{server}", server)
-    .replace("{status}", `${emoji} ${testResult.message}`)
-    .replace("{rating}", rating)
-    .replace("{latency}", testResult.latency > 0 ? `${testResult.latency}ms` : "N/A");
+    .replace(/{type}/g, detectType(config).toUpperCase())
+    .replace(/{server}/g, server)
+    .replace(/{status}/g, `${emoji} ${testResult.message}`)
+    .replace(/{rating}/g, rating)
+    .replace(/{latency}/g, testResult.latency > 0 ? `${testResult.latency}ms` : "N/A")
+    .replace(/{channel}/g, channel)
+    + `\n\n\`${config}\``;
 }
 
 // ======== Cleanup Logic ========
 async function cleanupConfigs(env) {
   const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
   const stored = await kvGet(env, "stored_configs", []);
-  const now = new Date();
+  const now = Date.now();
   const removed = [];
   const kept = [];
 
   for (const config of stored) {
     let shouldRemove = false;
-    const created = new Date(config.created_at);
-    const daysSinceCreated = (now - created) / (1000 * 60 * 60 * 24);
     
-    const votes = await getConfigVotes(env, config.hash);
-    const hasLikes = votes.likes.length >= settings.minLikesToKeep;
-    
-    if (daysSinceCreated > settings.autoDeleteDays && !hasLikes) {
-      shouldRemove = true;
-    }
-    
-    if (config.test_result?.timestamp) {
-      const lastTest = new Date(config.test_result.timestamp);
-      const daysSinceTest = (now - lastTest) / (1000 * 60 * 60 * 24);
-      if (daysSinceTest > settings.staleDeleteDays) {
+    // 1. Check Age
+    const created = new Date(config.created_at).getTime();
+    if (!isNaN(created)) {
+      const daysSinceCreated = (now - created) / (1000 * 60 * 60 * 24);
+      const votes = await getConfigVotes(env, config.hash);
+      const hasLikes = votes.likes.length >= (settings.minLikesToKeep || 1);
+
+      if (daysSinceCreated > (settings.autoDeleteDays || 7) && !hasLikes) {
         shouldRemove = true;
       }
     }
     
-    if (config.failed_tests && config.failed_tests >= settings.maxFailedTests) {
+    // 2. Check Stale Test Results
+    if (!shouldRemove && config.test_result?.timestamp) {
+      const lastTest = new Date(config.test_result.timestamp).getTime();
+      if (!isNaN(lastTest)) {
+        const daysSinceTest = (now - lastTest) / (1000 * 60 * 60 * 24);
+        if (daysSinceTest > (settings.staleDeleteDays || 14)) {
+          shouldRemove = true;
+        }
+      }
+    }
+    
+    // 3. Check Failed Tests
+    if (!shouldRemove && config.failed_tests && config.failed_tests >= (settings.maxFailedTests || 50)) {
       shouldRemove = true;
     }
     
@@ -509,9 +567,6 @@ async function checkAndDistribute(env) {
   for (const item of allNew.slice(0, 20)) {
     const testResult = await testConfig(item.config);
     const votes = await getConfigVotes(env, item.hash);
-    const msg = await formatMessage(env, item.config, testResult, votes);
-    const fullMsg = `${msg}\n\n\`${item.config}\``;
-    const keyboard = configKeyboard(item.config, item.hash);
 
     if (testResult.status === "dead") {
       const existing = storedConfigs.find(c => c.hash === item.hash);
@@ -534,7 +589,9 @@ async function checkAndDistribute(env) {
 
     for (const channel of channels) {
       try {
-        await sendTelegram(env, channel, fullMsg, keyboard);
+        const msg = await formatMessage(env, item.config, testResult, votes, channel);
+        const keyboard = configKeyboard(item.config, item.hash, channel);
+        await sendTelegram(env, channel, msg, keyboard);
         await new Promise(r => setTimeout(r, 1000));
       } catch (e) { console.error(`Send error to ${channel}:`, e); }
     }
@@ -608,7 +665,8 @@ async function handleWebhook(env, update) {
     if (latest.length > 0) {
       for (const c of latest) {
         const votes = await getConfigVotes(env, c.hash);
-        await sendTelegram(env, chatId, `🔰 *${c.type.toUpperCase()}*\n${c.test_result?.message || "Unknown"}\n⭐ Rating: 👍 ${votes.likes.length} | 👎 ${votes.dislikes.length}\n\n\`${c.config}\``);
+        const msg = await formatMessage(env, c.config, c.test_result || {status: "unknown", message: "Unknown"}, votes, chatId);
+        await sendTelegram(env, chatId, msg, configKeyboard(c.config, c.hash, chatId));
       }
     } else {
       await sendTelegram(env, chatId, "No configs available yet.");
@@ -631,7 +689,8 @@ async function handleWebhook(env, update) {
       .slice(0, 5);
     
     for (const c of sorted) {
-      await sendTelegram(env, chatId, `🏆 *${c.type.toUpperCase()}*\n⭐ Score: ${c.votes.score} (👍 ${c.votes.likes.length})\n📊 ${c.test_result?.message || "Unknown"}\n\n\`${c.config}\``, configKeyboard(c.config, c.hash));
+      const msg = await formatMessage(env, c.config, c.test_result || {status: "unknown", message: "Unknown"}, c.votes, chatId);
+      await sendTelegram(env, chatId, msg, configKeyboard(c.config, c.hash, chatId));
     }
   } else if (text.startsWith("/add_link ") && isAdmin) {
     const url = text.replace("/add_link ", "").trim();
@@ -707,8 +766,7 @@ async function handleCallback(env, callback) {
     const cfg = stored.find(c => c.hash === hash);
     if (cfg) {
       const testResult = cfg.test_result || await testConfig(cfg.config);
-      const newMsg = await formatMessage(env, cfg.config, testResult, votes);
-      const fullMsg = `${newMsg}\n\n\`${cfg.config}\``;
+      const newMsg = await formatMessage(env, cfg.config, testResult, votes, chatId);
       
       try {
         await fetch(`${telegramApi(env.BOT_TOKEN)}/editMessageText`, {
@@ -717,9 +775,9 @@ async function handleCallback(env, callback) {
           body: JSON.stringify({
             chat_id: chatId,
             message_id: callback.message.message_id,
-            text: fullMsg,
+            text: newMsg,
             parse_mode: "Markdown",
-            reply_markup: configKeyboard(cfg.config, hash)
+            reply_markup: configKeyboard(cfg.config, hash, chatId)
           })
         });
       } catch (e) { console.error("Edit error:", e); }
@@ -735,7 +793,8 @@ async function handleCallback(env, callback) {
     const latest = stored.slice(0, 5);
     for (const c of latest) {
       const votes = await getConfigVotes(env, c.hash);
-      await sendTelegram(env, chatId, `🔰 *${c.type.toUpperCase()}*\n${c.test_result?.message || "Unknown"}\n⭐ 👍 ${votes.likes.length} | 👎 ${votes.dislikes.length}\n\n\`${c.config}\``, configKeyboard(c.config, c.hash));
+      const msg = await formatMessage(env, c.config, c.test_result || {status: "unknown", message: "Unknown"}, votes, chatId);
+      await sendTelegram(env, chatId, msg, configKeyboard(c.config, c.hash, chatId));
     }
     if (!latest.length) await sendTelegram(env, chatId, "No configs yet.");
   } else if (data === "best_rated") {
@@ -753,7 +812,8 @@ async function handleCallback(env, callback) {
       .slice(0, 5);
     
     for (const c of sorted) {
-      await sendTelegram(env, chatId, `🏆 *${c.type.toUpperCase()}* | Score: ${c.votes.score}\n📊 ${c.test_result?.message || "Unknown"}\n\n\`${c.config}\``, configKeyboard(c.config, c.hash));
+      const msg = await formatMessage(env, c.config, c.test_result || {status: "unknown", message: "Unknown"}, c.votes, chatId);
+      await sendTelegram(env, chatId, msg, configKeyboard(c.config, c.hash, chatId));
     }
     if (!sorted.length) await sendTelegram(env, chatId, "No rated configs yet.");
   } else if (data === "bot_stats") {
@@ -806,11 +866,11 @@ async function handleCallback(env, callback) {
     if (sub) {
       const testResult = await testConfig(sub.config);
       const votes = await getConfigVotes(env, h);
-      const msg = await formatMessage(env, sub.config, testResult, votes);
       const channels = await kvGet(env, "channel_ids", [env.CHANNEL_ID]);
       
       for (const ch of channels) {
-        await sendTelegram(env, ch, `${msg}\n\n\`${sub.config}\``, configKeyboard(sub.config, h));
+        const msg = await formatMessage(env, sub.config, testResult, votes, ch);
+        await sendTelegram(env, ch, msg, configKeyboard(sub.config, h, ch));
         await new Promise(r => setTimeout(r, 1000));
       }
       
@@ -827,11 +887,6 @@ async function handleCallback(env, callback) {
       await kvSet(env, "submissions", subs); 
     }
     await sendTelegram(env, chatId, "❌ Rejected.");
-  } else if (data.startsWith("copy_")) {
-    const h = data.replace("copy_", "");
-    const stored = await kvGet(env, "stored_configs", []);
-    const cfg = stored.find(c => hashConfig(c.config) === h);
-    if (cfg) await sendTelegram(env, chatId, `\`${cfg.config}\``);
   }
 }
 
@@ -1332,10 +1387,11 @@ async function handleDashboardAPI(env, request, path) {
     const sub = subs.find(s => s.config === config && s.status === "pending");
     if (sub) {
       const testResult = await testConfig(config);
-      const msg = await formatMessage(env, config, testResult);
       const channels = await kvGet(env, "channel_ids", [env.CHANNEL_ID]);
+      const h = hashConfig(config);
       for (const ch of channels) {
-        await sendTelegram(env, ch, `${msg}\n\n\`${config}\``, configKeyboard(config, hashConfig(config)));
+        const msg = await formatMessage(env, config, testResult, null, ch);
+        await sendTelegram(env, ch, msg, configKeyboard(config, h, ch));
       }
       sub.status = "approved";
       await kvSet(env, "submissions", subs);
