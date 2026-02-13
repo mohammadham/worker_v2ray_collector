@@ -22,7 +22,7 @@ The **VPN Config Bot Pro** is a powerful Cloudflare Worker that automates the li
 
 ### Admin Features
 - **Dashboard API & UI**: A complete web-based management interface for monitoring stats, managing links/channels, and approving submissions.
-- **Customizable Templates**: Admins can edit message templates per protocol using placeholders like `{server}`, `{status}`, `{rating}`, `{latency}`, and `{channel}`.
+- **Customizable Templates**: Admins can edit message templates per protocol using placeholders like `{server}`, `{status}`, `{rating}`, `{latency}`, `{channel}`, and `{location}`.
 - **Manual Control**: Force cleanup or fetch operations via Telegram commands or the dashboard.
 - **Submission Management**: Review pending user submissions with one-click approve/reject functionality.
 
@@ -147,12 +147,15 @@ The bot provides a REST API for management and integration. All dashboard endpoi
   - Body: `{"key": "all", "value": { ... }}`
 
 ### Public Endpoints (No Auth)
-- **GET `/api/configs?limit=10`**
+- **GET `/api/configs?limit=10&country=US`**
   - Returns a simple list of currently active raw configurations.
+  - Optional `limit` (default 10, max 100).
+  - Optional `country` code (e.g., `US`, `DE`, `TR`) to filter results.
   - Example Response:
     ```json
     {
       "count": 2,
+      "country": "US",
       "configs": ["vless://...", "vmess://..."]
     }
     ```

@@ -9,11 +9,11 @@ const CONFIG_PATTERNS = [
 ];
 
 const DEFAULT_TEMPLATES = {
-  vless: "🟢 *VLESS Config*\n🌍 Server: {server}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}",
-  vmess: "🔵 *VMess Config*\n🌍 Server: {server}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}",
-  trojan: "🔴 *Trojan Config*\n🌍 Server: {server}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}",
-  ss: "🟡 *Shadowsocks Config*\n🌍 Server: {server}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}",
-  default: "⚪ *VPN Config*\n🌍 Server: {server}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}"
+  vless: "🟢 *VLESS Config*\n🌍 Server: {server}\n📍 Location: {location}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}",
+  vmess: "🔵 *VMess Config*\n🌍 Server: {server}\n📍 Location: {location}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}",
+  trojan: "🔴 *Trojan Config*\n🌍 Server: {server}\n📍 Location: {location}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}",
+  ss: "🟡 *Shadowsocks Config*\n🌍 Server: {server}\n📍 Location: {location}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}",
+  default: "⚪ *VPN Config*\n🌍 Server: {server}\n📍 Location: {location}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}"
 };
 
 const DEFAULT_SETTINGS = {
@@ -210,6 +210,17 @@ function hashConfig(config) {
   return Math.abs(hash).toString(36);
 }
 
+function getFlag(countryCode) {
+  if (!countryCode || countryCode === "UN") return "🏳️";
+  try {
+    return countryCode
+      .toUpperCase()
+      .replace(/./g, char => String.fromCodePoint(char.charCodeAt(0) + 127397));
+  } catch (e) {
+    return "🏳️";
+  }
+}
+
 function extractServer(config) {
   const type = detectType(config);
   try {
@@ -335,6 +346,9 @@ async function testConfig(config) {
   const result = { 
     host, 
     port, 
+    ip: null,
+    country: "Unknown",
+    countryCode: "UN",
     tcp: false, 
     dns: false, 
     latency: -1,
@@ -349,8 +363,24 @@ async function testConfig(config) {
     const dnsData = await dnsResp.json();
     if (dnsData.Answer && dnsData.Answer.length > 0) {
       result.dns = true;
+      result.ip = dnsData.Answer[0].data;
     }
   } catch (e) {}
+
+  // 1.5 Geo-Location Check (if DNS succeeded)
+  if (result.dns && result.ip) {
+    try {
+      // Use ip-api.com (free for non-commercial, 45 requests per minute)
+      const geoResp = await fetchWithTimeout(`http://ip-api.com/json/${result.ip}`, {}, 2000).catch(() => null);
+      if (geoResp) {
+        const geoData = await geoResp.json();
+        if (geoData.status === "success") {
+          result.country = geoData.country || "Unknown";
+          result.countryCode = geoData.countryCode || "UN";
+        }
+      }
+    } catch (e) {}
+  }
 
   // 2. TCP/HTTPS Check
   if (result.dns) {
@@ -361,7 +391,7 @@ async function testConfig(config) {
         method: "HEAD",
         cf: { cacheTtl: 0 }
       }, 5000).catch(() => null);
-      
+
       // If HTTPS fails, try HTTP
       if (!resp) {
         resp = await fetchWithTimeout(`http://${host}:${port}`, {
@@ -466,6 +496,8 @@ async function formatMessage(env, config, testResult, votes = null, channelInfo 
   
   const rating = votes ? `👍 ${votes.likes.length} | 👎 ${votes.dislikes.length}` : "N/A";
   const channel = channelInfo || "VPN Config Bot";
+  const flag = getFlag(testResult.countryCode);
+  const location = `${flag} ${testResult.country || "Unknown"}`;
   
   return template
     .replace(/{type}/g, detectType(config).toUpperCase())
@@ -474,6 +506,7 @@ async function formatMessage(env, config, testResult, votes = null, channelInfo 
     .replace(/{rating}/g, rating)
     .replace(/{latency}/g, testResult.latency > 0 ? `${testResult.latency}ms` : "N/A")
     .replace(/{channel}/g, channel)
+    .replace(/{location}/g, location)
     + `\n\n\`${config}\``;
 }
 
@@ -1206,6 +1239,10 @@ async function loadChannels(){
 }
 async function addChannel(){const c=document.getElementById("new-channel").value;if(c){await api("/channels","POST",{channel_id:c});document.getElementById("new-channel").value="";loadChannels();loadStats();}}
 async function removeChannel(c){await api("/channels","DELETE",{channel_id:c});loadChannels();loadStats();}
+function getFlag(code) {
+  if (!code || code === "UN") return "🏳️";
+  return code.toUpperCase().replace(/./g, c => String.fromCodePoint(c.charCodeAt(0) + 127397));
+}
 async function loadConfigs(page=1){
   currentPage=page;
   const sortBy=document.getElementById("sort-by").value;
@@ -1216,7 +1253,8 @@ async function loadConfigs(page=1){
   document.getElementById("configs-list").innerHTML=(d.configs||[]).map(c=>{
     const badge=c.test_result?.status==="active"?"badge-active":c.test_result?.status==="dns_only"?"badge-dns":"badge-dead";
     const votes=c.votes||{likes:0,dislikes:0,score:0};
-    return '<div class="config-card"><div style="display:flex;justify-content:space-between;align-items:center"><span class="badge '+badge+'">'+c.type.toUpperCase()+'</span><span style="color:#888;font-size:12px">'+(c.test_result?.latency||"N/A")+'ms</span></div><div style="margin:8px 0">'+c.test_result?.message+" | Sources: "+(c.sources?.join(', ')||'Unknown')+'</div><div class="voting"><button class="vote-btn '+(votes.userVoted==='like'?'liked':'')+'" onclick="vote(\\''+c.hash+'\\',\\'like\\')">👍 '+votes.likes+'</button><button class="vote-btn '+(votes.userVoted==='dislike'?'disliked':'')+'" onclick="vote(\\''+c.hash+'\\',\\'dislike\\')">👎 '+votes.dislikes+'</button><span style="color:#00d4ff">Score: '+votes.score+'</span></div><code>'+c.config+'</code><div style="margin-top:10px"><button class="btn-danger" onclick="deleteConfig(\\''+c.hash+'\\')">🗑️ Delete</button></div></div>';
+    const location = getFlag(c.test_result?.countryCode) + " " + (c.test_result?.country || "Unknown");
+    return '<div class="config-card"><div style="display:flex;justify-content:space-between;align-items:center"><div><span class="badge '+badge+'">'+c.type.toUpperCase()+'</span><span style="font-size:12px">'+location+'</span></div><span style="color:#888;font-size:12px">'+(c.test_result?.latency||"N/A")+'ms</span></div><div style="margin:8px 0">'+c.test_result?.message+" | Sources: "+(c.sources?.join(', ')||'Unknown')+'</div><div class="voting"><button class="vote-btn '+(votes.userVoted==='like'?'liked':'')+'" onclick="vote(\\''+c.hash+'\\',\\'like\\')">👍 '+votes.likes+'</button><button class="vote-btn '+(votes.userVoted==='dislike'?'disliked':'')+'" onclick="vote(\\''+c.hash+'\\',\\'dislike\\')">👎 '+votes.dislikes+'</button><span style="color:#00d4ff">Score: '+votes.score+'</span></div><code>'+c.config+'</code><div style="margin-top:10px"><button class="btn-danger" onclick="deleteConfig(\\''+c.hash+'\\')">🗑️ Delete</button></div></div>';
   }).join("")||"<p>No configs yet.</p>";
   
   renderPagination();
@@ -1643,10 +1681,18 @@ export default {
     // Public API for Configs
     if (url.pathname === "/api/configs") {
       const limit = Math.min(parseInt(url.searchParams.get("limit")) || 10, 100);
+      const country = url.searchParams.get("country")?.toUpperCase();
       const stored = await kvGet(env, "stored_configs", []);
-      const active = stored.filter(c => c.test_result?.status === "active").slice(0, limit);
+
+      let filtered = stored.filter(c => c.test_result?.status === "active");
+      if (country) {
+        filtered = filtered.filter(c => c.test_result?.countryCode === country);
+      }
+
+      const active = filtered.slice(0, limit);
       return jsonResp({
         count: active.length,
+        country: country || "ALL",
         configs: active.map(c => c.config)
       });
     }
