@@ -525,14 +525,33 @@ async function updateConfigQualityScore(env, configHash) {
   return stored[idx].quality_score;
 }
 
+async function incrementUserStats(env, chatId, count) {
+  const stats = await kvGet(env, `user_stats_${chatId}`, { approved_count: 0 });
+  stats.approved_count += count;
+  await kvSet(env, `user_stats_${chatId}`, stats);
+}
+
 // ======== Menus ========
 function userMenu() {
   return { inline_keyboard: [
     [{ text: "📤 Submit Config", callback_data: "submit_config" }],
     [{ text: "📋 Latest Configs", callback_data: "latest_configs" }],
     [{ text: "⭐ Best Rated", callback_data: "best_rated" }],
+    [{ text: "💎 My Subscription", callback_data: "user_subscription" }],
     [{ text: "📊 Bot Stats", callback_data: "bot_stats" }],
     [{ text: "ℹ️ Help", callback_data: "user_help" }]
+  ]};
+}
+
+function subAdminMenu(isInitialized = false) {
+  if (!isInitialized) {
+    return { inline_keyboard: [[{ text: "🚀 Initialize Subscription Service", callback_data: "sub_init" }]] };
+  }
+  return { inline_keyboard: [
+    [{ text: "➕ Add Config", callback_data: "sub_add_config" }, { text: "🗑️ Manage Configs", callback_data: "sub_list_configs" }],
+    [{ text: "👥 Manage Clients", callback_data: "sub_manage_clients" }],
+    [{ text: "📊 Service Stats", callback_data: "sub_stats" }],
+    [{ text: "🔙 Back to User Menu", callback_data: "back_to_user" }]
   ]};
 }
 
@@ -875,6 +894,70 @@ async function handleWebhook(env, update) {
     return;
   }
 
+  if (userState === "sub_awaiting_config") {
+    await kvSet(env, `user_state_${chatId}`, null);
+    const configs = extractConfigs(text);
+    if (configs.length > 0) {
+      const subData = await kvGet(env, `sub_admin_data_${chatId}`);
+      if (subData) {
+        subData.configs = [...(subData.configs || []), ...configs];
+        await kvSet(env, `sub_admin_data_${chatId}`, subData);
+        await sendTelegram(env, chatId, `✅ Added ${configs.length} personal config(s)!`, subAdminMenu(true));
+      }
+    } else {
+      await sendTelegram(env, chatId, "❌ No valid config found.");
+    }
+    return;
+  }
+
+  if (userState === "sub_awaiting_limits") {
+    await kvSet(env, `user_state_${chatId}`, null);
+    const parts = text.trim().split(/\s+/);
+    const limitAct = parseInt(parts[0]);
+    const limitVol = parseInt(parts[1]);
+
+    if (!isNaN(limitAct) && !isNaN(limitVol)) {
+      const subData = await kvGet(env, `sub_admin_data_${chatId}`);
+      if (subData) {
+        const clientId = Math.random().toString(36).substring(2, 10).toUpperCase();
+        const newClient = {
+          clientId,
+          limitAct,
+          limitVol,
+          usedAct: 0,
+          usedVol: 0,
+          created_at: new Date().toISOString()
+        };
+        subData.clients = [...(subData.clients || []), newClient];
+        await kvSet(env, `sub_admin_data_${chatId}`, subData);
+
+        const combinedCode = `${subData.adminId}-${clientId}`;
+        await kvSet(env, `sub_lookup_client_${combinedCode}`, chatId);
+
+        await sendTelegram(env, chatId, `✅ Client Added!\nSubscription Code: \`${combinedCode}\``, subAdminMenu(true));
+      }
+    } else {
+      await sendTelegram(env, chatId, "❌ Invalid format. Please use: `[Activations] [VolumeGB]`");
+    }
+    return;
+  }
+
+  if (text.startsWith("/sub_del_client_")) {
+    const cid = text.replace("/sub_del_client_", "").trim();
+    const subData = await kvGet(env, `sub_admin_data_${chatId}`);
+    if (subData && subData.clients) {
+      const idx = subData.clients.findIndex(c => c.clientId === cid);
+      if (idx !== -1) {
+        const combinedCode = `${subData.adminId}-${cid}`;
+        subData.clients.splice(idx, 1);
+        await kvSet(env, `sub_admin_data_${chatId}`, subData);
+        await kvDelete(env, `sub_lookup_client_${combinedCode}`);
+        await sendTelegram(env, chatId, "✅ Client deleted.");
+      }
+    }
+    return;
+  }
+
   if (text === "/start") {
     const menu = isAdmin ? adminMenu() : userMenu();
     await sendTelegram(env, chatId, "🌐 *VPN Config Bot Pro*\n\nChoose an option:", menu);
@@ -1018,6 +1101,80 @@ async function handleCallback(env, callback) {
   if (data === "submit_config") {
     await kvSet(env, `user_state_${chatId}`, "awaiting_config");
     await sendTelegram(env, chatId, "📤 Send your V2Ray config now:");
+  } else if (data === "user_subscription") {
+    const stats = await kvGet(env, `user_stats_${chatId}`, { approved_count: 0 });
+    if (stats.approved_count < 20 && !isAdmin) {
+      await sendTelegram(env, chatId, `❌ You need at least 20 approved configs to start your own subscription service.\nYour current count: ${stats.approved_count}`);
+      return;
+    }
+    const subData = await kvGet(env, `sub_admin_data_${chatId}`);
+    await sendTelegram(env, chatId, "💎 *Subscription Management*\n\nHere you can manage your personal subscription service.", subAdminMenu(!!subData));
+  } else if (data === "sub_init") {
+    let subData = await kvGet(env, `sub_admin_data_${chatId}`);
+    if (!subData) {
+      const adminId = Math.random().toString(36).substring(2, 10).toUpperCase();
+      subData = { adminId, configs: [], clients: [], created_at: new Date().toISOString() };
+      await kvSet(env, `sub_admin_data_${chatId}`, subData);
+      await kvSet(env, `sub_lookup_admin_${adminId}`, chatId);
+      await sendTelegram(env, chatId, `✅ Service initialized!\nYour Admin ID: \`${adminId}\``);
+    }
+    await sendTelegram(env, chatId, "💎 *Subscription Management*", subAdminMenu(true));
+  } else if (data === "back_to_user") {
+    await sendTelegram(env, chatId, "🌐 *VPN Config Bot Pro*", userMenu());
+  } else if (data === "sub_add_config") {
+    await kvSet(env, `user_state_${chatId}`, "sub_awaiting_config");
+    await sendTelegram(env, chatId, "📤 Send your personal V2Ray config(s) now:");
+  } else if (data === "sub_list_configs") {
+    const subData = await kvGet(env, `sub_admin_data_${chatId}`);
+    if (subData && subData.configs?.length) {
+      await sendTelegram(env, chatId, "🗑️ *Your Personal Configs:*\nClick one to delete it:");
+      for (let i = 0; i < subData.configs.length; i++) {
+        const c = subData.configs[i];
+        const h = hashConfig(c);
+        await sendTelegram(env, chatId, `\`${c.substring(0, 50)}...\``, {
+          inline_keyboard: [[{ text: "🗑️ Delete", callback_data: `sub_del_config_${i}` }]]
+        });
+      }
+    } else {
+      await sendTelegram(env, chatId, "No personal configs yet.");
+    }
+  } else if (data.startsWith("sub_del_config_")) {
+    const idx = parseInt(data.replace("sub_del_config_", ""));
+    const subData = await kvGet(env, `sub_admin_data_${chatId}`);
+    if (subData && subData.configs?.[idx]) {
+      subData.configs.splice(idx, 1);
+      await kvSet(env, `sub_admin_data_${chatId}`, subData);
+      await sendTelegram(env, chatId, "✅ Deleted.");
+    }
+  } else if (data === "sub_manage_clients") {
+    const subData = await kvGet(env, `sub_admin_data_${chatId}`);
+    if (subData) {
+      let msg = `👥 *Manage Clients*\nAdmin ID: \`${subData.adminId}\`\n\n`;
+      if (subData.clients?.length) {
+        subData.clients.forEach((c, i) => {
+          const code = `${subData.adminId}-${c.clientId}`;
+          msg += `${i+1}. Code: \`${code}\`\n   Limit: ${c.limitVol}GB | Used: ${c.usedVol?.toFixed(2) || 0}GB\n   Acts: ${c.usedAct}/${c.limitAct}\n   [Delete /sub_del_client_${c.clientId}]\n\n`;
+        });
+      } else {
+        msg += "No clients added yet.";
+      }
+      await sendTelegram(env, chatId, msg, {
+        inline_keyboard: [
+          [{ text: "➕ Add Client", callback_data: "sub_add_client" }],
+          [{ text: "🔙 Back", callback_data: "user_subscription" }]
+        ]
+      });
+    }
+  } else if (data === "sub_add_client") {
+    await kvSet(env, `user_state_${chatId}`, "sub_awaiting_limits");
+    await sendTelegram(env, chatId, "📝 Enter limits for the new client.\nFormat: `[Activations] [VolumeGB]`\nExample: `3 50` (3 devices, 50GB)");
+  } else if (data === "sub_stats") {
+    const subData = await kvGet(env, `sub_admin_data_${chatId}`);
+    if (subData) {
+      const totalUsed = (subData.clients || []).reduce((sum, c) => sum + (c.usedVol || 0), 0);
+      const msg = `📊 *Service Stats*\n\nAdmin ID: \`${subData.adminId}\`\nConfigs: ${subData.configs?.length || 0}\nClients: ${subData.clients?.length || 0}\nTotal Traffic: ${totalUsed.toFixed(2)} GB`;
+      await sendTelegram(env, chatId, msg, { inline_keyboard: [[{ text: "🔙 Back", callback_data: "user_subscription" }]] });
+    }
   } else if (data === "latest_configs") {
     const stored = await kvGet(env, "stored_configs", []);
     const latest = stored.slice(0, 5);
@@ -1120,6 +1277,7 @@ async function handleCallback(env, callback) {
       
       sub.status = "approved";
       await kvSet(env, "submissions", subs);
+      await incrementUserStats(env, sub.submitted_by, sub.configs?.length || 1);
 
       // Add to stored configs (individually)
       let currentStored = await kvGet(env, "stored_configs", []);
@@ -1707,6 +1865,7 @@ async function handleDashboardAPI(env, request, path) {
       }
       sub.status = "approved";
       await kvSet(env, "submissions", subs);
+      await incrementUserStats(env, sub.submitted_by, sub.configs?.length || 1);
 
       // Add to stored configs (individually)
       let currentStored = await kvGet(env, "stored_configs", []);
@@ -1922,6 +2081,49 @@ export default {
       });
 
       return jsonResp(Object.values(counts).sort((a, b) => b.count - a.count));
+    }
+
+    // User-to-User Subscription API
+    if (url.pathname === "/api/user-sub") {
+      const code = url.searchParams.get("code");
+      if (!code) return jsonResp({ error: "Code required" }, 400);
+
+      const adminChatId = await kvGet(env, `sub_lookup_client_${code}`);
+      if (!adminChatId) return new Response("Invalid subscription code", { status: 403 });
+
+      const subData = await kvGet(env, `sub_admin_data_${adminChatId}`);
+      if (!subData) return new Response("Service unavailable", { status: 404 });
+
+      const subParts = code.split('-'); const clientId = subParts[subParts.length - 1];
+      const client = subData.clients?.find(c => c.clientId === clientId);
+
+      if (!client) return new Response("Client not found", { status: 404 });
+      if (client.usedVol >= client.limitVol) return new Response("Subscription expired (Volume limit)", { status: 403 });
+
+      const configs = subData.configs || [];
+      return new Response(btoa(configs.join("\n")), {
+        headers: { "Content-Type": "text/plain; charset=utf-8", "Access-Control-Allow-Origin": "*" }
+      });
+    }
+
+    // Usage Reporting API
+    if (url.pathname === "/api/user-sub/report" && request.method === "POST") {
+      const { code, volumeMB, activate } = await request.json();
+      const adminChatId = await kvGet(env, `sub_lookup_client_${code}`);
+      if (!adminChatId) return jsonResp({ error: "Invalid code" }, 403);
+
+      const subData = await kvGet(env, `sub_admin_data_${adminChatId}`);
+      const subParts = code.split('-'); const clientId = subParts[subParts.length - 1];
+      const client = subData.clients?.find(c => c.clientId === clientId);
+
+      if (client) {
+        if (volumeMB) client.usedVol = (client.usedVol || 0) + (volumeMB / 1024);
+        if (activate) client.usedAct = (client.usedAct || 0) + 1;
+
+        await kvSet(env, `sub_admin_data_${adminChatId}`, subData);
+        return jsonResp({ status: "updated", usedVol: client.usedVol, usedAct: client.usedAct });
+      }
+      return jsonResp({ error: "Client not found" }, 404);
     }
 
     // Dashboard API - API موجود قبلی با بهبود

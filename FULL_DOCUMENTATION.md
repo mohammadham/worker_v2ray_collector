@@ -112,6 +112,30 @@ Over time, configurations may die or become slow. The cleanup task runs daily, c
   4.  **Proactive Testing**: Retest oldest configs, update their Quality Score, and remove those that fail.
   5.  **FIFO**: Remove oldest configs if still over the limit.
 
+### 5.4 Publish Queue Configuration
+Admins can enable the **Publish Queue** in the dashboard settings:
+- **Enable Queue**: Toggle whether new configs should be sent immediately or wait in line.
+- **Queue Interval (min)**: How many minutes between publication runs.
+- **Queue Batch Size**: How many configs (or bundles) to publish in each run.
+
+### 5.5 User-to-User Subscription System
+Users who contribute at least **20 approved configurations** to the main channel can start their own subscription service via the **💎 My Subscription** menu.
+
+#### Features for Sub-Admins:
+- **Admin ID**: A unique identifier for their service.
+- **Personal Config Pool**: Manage a dedicated list of configurations separate from the bot's public pool.
+- **Client Management**: Create unique **Subscription Codes** (`AdminID-ClientID`) for their users.
+- **Usage Limits**: Set Volume (GB) and Activation (Device) limits for each client.
+- **Live Stats**: Monitor total traffic and client activity.
+
+#### Sub-Admin API (for Android App):
+- **GET `/api/user-sub?code=...`**:
+  - Validates the code and returns the personal config list in Base64 format.
+  - Checks if volume limits are exceeded.
+- **POST `/api/user-sub/report`**:
+  - Body: `{"code": "...", "volumeMB": 1024, "activate": true}`
+  - Updates the client's consumed volume and activation count in KV.
+
 ---
 
 ## 6. Strengths & Weaknesses
