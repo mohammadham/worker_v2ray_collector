@@ -786,8 +786,8 @@ async function checkAndDistribute(env) {
   let sentCount = 0;
   let invalidCount = 0;
 
-  // Limit processing to 30 new configs per run to avoid timeout
-  for (const item of allNew.slice(0, 30)) {
+  // Limit processing to 12 new configs per run to avoid Free Tier subrequest limits (50)
+  for (const item of allNew.slice(0, 12)) {
     const testResult = await testConfig(item.config);
 
     // Strict Filtering: Only Active and Latency < 10,000ms
@@ -832,7 +832,7 @@ async function checkAndDistribute(env) {
     await kvSet(env, "stored_configs", finalConfigs.slice(0, 1000));
   }
 
-  const summary = `✅ Summary:\n- Distributed: ${sentCount}\n- Skipped (Invalid): ${invalidCount}\n- Total Scanned: ${Math.min(allNew.length, 30)}`;
+  const summary = `✅ Summary:\n- Distributed: ${sentCount}\n- Skipped (Invalid): ${invalidCount}\n- Total Scanned: ${Math.min(allNew.length, 12)}`;
   await sendTelegram(env, env.ADMIN_CHAT_ID, summary);
 
   return { new_configs: sentCount, invalid: invalidCount, total: allNew.length };
@@ -1856,19 +1856,72 @@ export default {
     if (url.pathname === "/api/configs") {
       const limit = Math.min(parseInt(url.searchParams.get("limit")) || 10, 100);
       const country = url.searchParams.get("country")?.toUpperCase();
+      const minQuality = parseInt(url.searchParams.get("min_quality")) || 0;
+      const sortBy = url.searchParams.get("sort") || "newest";
+
       const stored = await kvGet(env, "stored_configs", []);
 
-      let filtered = stored.filter(c => c.test_result?.status === "active");
+      let filtered = stored.filter(c => c.test_result?.status === "active" && (c.quality_score || 0) >= minQuality);
       if (country) {
         filtered = filtered.filter(c => c.test_result?.countryCode === country);
+      }
+
+      if (sortBy === "best") {
+        filtered.sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
       }
 
       const active = filtered.slice(0, limit);
       return jsonResp({
         count: active.length,
         country: country || "ALL",
+        min_quality: minQuality,
+        sort: sortBy,
         configs: active.map(c => c.config)
       });
+    }
+
+    // Subscription API (Base64 for V2Ray clients)
+    if (url.pathname === "/api/sub") {
+      const limit = Math.min(parseInt(url.searchParams.get("limit")) || 100, 1000);
+      const country = url.searchParams.get("country")?.toUpperCase();
+      const minQuality = parseInt(url.searchParams.get("min_quality")) || 0;
+      const sortBy = url.searchParams.get("sort") || "best";
+
+      const stored = await kvGet(env, "stored_configs", []);
+
+      let filtered = stored.filter(c => c.test_result?.status === "active" && (c.quality_score || 0) >= minQuality);
+      if (country) {
+        filtered = filtered.filter(c => c.test_result?.countryCode === country);
+      }
+
+      if (sortBy === "best") {
+        filtered.sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
+      }
+
+      const active = filtered.slice(0, limit);
+      const subContent = btoa(active.map(c => c.config).join("\n"));
+
+      return new Response(subContent, {
+        headers: { "Content-Type": "text/plain; charset=utf-8", "Access-Control-Allow-Origin": "*" }
+      });
+    }
+
+    // Countries List API for App UI
+    if (url.pathname === "/api/countries") {
+      const stored = await kvGet(env, "stored_configs", []);
+      const active = stored.filter(c => c.test_result?.status === "active");
+
+      const counts = {};
+      active.forEach(c => {
+        const code = c.test_result?.countryCode || "UN";
+        const name = c.test_result?.country || "Unknown";
+        if (!counts[code]) {
+          counts[code] = { country: name, countryCode: code, count: 0 };
+        }
+        counts[code].count++;
+      });
+
+      return jsonResp(Object.values(counts).sort((a, b) => b.count - a.count));
     }
 
     // Dashboard API - API موجود قبلی با بهبود

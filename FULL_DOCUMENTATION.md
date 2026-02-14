@@ -157,17 +157,38 @@ The bot provides a REST API for management and integration. All dashboard endpoi
   - Body: `{"key": "all", "value": { ... }}`
 
 ### Public Endpoints (No Auth)
-- **GET `/api/configs?limit=10&country=US`**
-  - Returns a simple list of currently active raw configurations.
-  - Optional `limit` (default 10, max 100).
-  - Optional `country` code (e.g., `US`, `DE`, `TR`) to filter results.
+
+- **GET `/api/configs?limit=10&country=US&min_quality=50&sort=best`**
+  - Returns a JSON list of active raw configurations.
+  - Parameters:
+    - `limit`: (Optional) Max number of configs (default 10, max 100).
+    - `country`: (Optional) Country code (e.g., `US`, `DE`).
+    - `min_quality`: (Optional) Minimum Quality Score (default 0).
+    - `sort`: (Optional) Use `best` to sort by Quality Score.
   - Example Response:
     ```json
     {
       "count": 2,
       "country": "US",
+      "min_quality": 50,
+      "sort": "best",
       "configs": ["vless://...", "vmess://..."]
     }
+    ```
+
+- **GET `/api/sub?limit=100&country=DE&min_quality=0`**
+  - Standard V2Ray Subscription endpoint.
+  - Returns a **Base64-encoded** string of configurations (plain text).
+  - Perfect for use in apps like v2rayNG or your custom Android app.
+
+- **GET `/api/countries`**
+  - Returns a list of all countries that currently have active configurations.
+  - Example Response:
+    ```json
+    [
+      { "country": "Germany", "countryCode": "DE", "count": 15 },
+      { "country": "United States", "countryCode": "US", "count": 8 }
+    ]
     ```
 
 ---
