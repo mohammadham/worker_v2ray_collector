@@ -16,8 +16,9 @@ The **VPN Config Bot Pro** is a powerful Cloudflare Worker that automates the li
 
 ### Telegram User Interface
 - **Monospaced Configs**: All configs are sent in a monospaced format, allowing users to tap and copy them instantly.
-- **Interactive Voting**: Like (👍) and Dislike (👎) buttons on every published config to drive a community-based quality score.
-- **On-Demand Retrieval**: Users can fetch the `/latest` or `/best` (top-rated) configurations directly through the bot.
+- **Quality Reporting**: Users can report dead or slow configurations using the **👎 Report** button. High report counts negatively impact the config's Quality Score.
+- **Quality Score**: A sophisticated scoring system that combines automated test results, user reports, and "Auto-Likes" from external sources (e.g., Android App).
+- **On-Demand Retrieval**: Users can fetch the `/latest` or `/best` (highest Quality Score) configurations directly through the bot.
 - **Submission System**: Users can submit raw configs or text containing configs; the bot extracts and queues them for admin approval.
 
 ### Admin Features
@@ -99,11 +100,13 @@ Over time, configurations may die or become slow. The cleanup task runs daily, c
 ### 5.3 Storage & Deduplication Policies
 - **Storage Limit**: The bot maintains a strict limit of **1,000 configurations** in KV.
 - **Smart Deduplication**: Configurations are compared based on their core connection parameters (Host, Port, ID, Cipher). Any text after the `#` symbol or the `ps` field in VMess is ignored during comparison.
-- **Auto-Cleanup Pipeline**: When the storage limit is reached, the bot performs a 5-stage cleanup:
+- **Quality-Based Management**: Configurations with extremely low **Quality Scores** (due to multiple reports) are prioritized for removal.
+- **Auto-Cleanup Pipeline**: When the storage limit is reached, the bot performs a 6-stage cleanup:
+  0.  **Quality Purge**: Remove configurations with a Quality Score below -200.
   1.  **Remove Dead**: Delete all configs marked as "dead".
   2.  **Age Check**: Delete configs older than **10 days**.
   3.  **Latency Check**: Delete configs with high latency (ping > 2000ms).
-  4.  **Proactive Testing**: Retest oldest configs and remove those that fail.
+  4.  **Proactive Testing**: Retest oldest configs, update their Quality Score, and remove those that fail.
   5.  **FIFO**: Remove oldest configs if still over the limit.
 
 ---
@@ -143,6 +146,9 @@ The bot provides a REST API for management and integration. All dashboard endpoi
 - **GET `/dashboard/api/stats`**: Get system statistics.
 - **GET `/dashboard/api/configs?sort=newest&limit=20&page=1`**: Fetch stored configs.
 - **POST `/dashboard/api/fetch-now`**: Trigger manual config scraping.
+- **POST `/dashboard/api/vote`**: Submit votes (single or batch).
+  - Single: `{"config_hash": "...", "vote": "like|dislike"}`
+  - Batch: `{"votes": [{"hash": "...", "type": "like"}, ...]}`
 - **POST `/dashboard/api/settings`**: Update bot settings.
   - Body: `{"key": "all", "value": { ... }}`
 

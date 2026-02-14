@@ -430,11 +430,48 @@ async function voteConfig(env, configHash, userId, voteType) {
   votes.lastVote = new Date().toISOString();
   
   await kvSet(env, `votes_${configHash}`, votes);
+  await updateConfigQualityScore(env, configHash);
   return votes;
 }
 
 async function getConfigVotes(env, configHash) {
   return await kvGet(env, `votes_${configHash}`, { likes: [], dislikes: [], score: 0 });
+}
+
+function calculateQualityScore(config, votes) {
+  let score = 0;
+  // 1. Voting weight (High impact)
+  score += (votes.likes?.length || 0) * 50;
+  score -= (votes.dislikes?.length || 0) * 100;
+
+  // 2. Latency weight
+  if (config.test_result?.status === "active" && config.test_result?.latency > 0) {
+    const latency = config.test_result.latency;
+    if (latency < 200) score += 100;
+    else if (latency < 500) score += 50;
+    else if (latency < 1000) score += 20;
+    else if (latency > 5000) score -= 50;
+  } else if (config.test_result?.status === "dead") {
+    score -= 200;
+  }
+
+  // 3. Age decay (Slightly favor newer configs if scores are equal)
+  const ageDays = (Date.now() - new Date(config.created_at).getTime()) / (1000 * 60 * 60 * 24);
+  score -= Math.floor(ageDays) * 5;
+
+  return score;
+}
+
+async function updateConfigQualityScore(env, configHash) {
+  const stored = await kvGet(env, "stored_configs", []);
+  const idx = stored.findIndex(c => c.hash === configHash);
+  if (idx === -1) return null;
+
+  const votes = await getConfigVotes(env, configHash);
+  stored[idx].quality_score = calculateQualityScore(stored[idx], votes);
+
+  await kvSet(env, "stored_configs", stored);
+  return stored[idx].quality_score;
 }
 
 // ======== Menus ========
@@ -474,7 +511,7 @@ function configKeyboard(config, hash, channelInfo = null) {
   }
 
   return { inline_keyboard: [
-    [{ text: "👍 Like", callback_data: `like_${hash}` }, { text: "👎 Dislike", callback_data: `dislike_${hash}` }],
+    [{ text: "👎 Report", callback_data: `dislike_${hash}` }],
     [{ text: "📤 Share", url: shareUrl }, { text: "📱 Open", url: `https://t.me/share/url?url=${encodeURIComponent(config)}` }]
   ]};
 }
@@ -521,6 +558,13 @@ async function manageStorage(env, newCount) {
   const now = Date.now();
   const TEN_DAYS = 10 * 24 * 60 * 60 * 1000;
 
+  // Stage 0: Remove extremely low quality (e.g. many reports)
+  stored.sort((a, b) => (a.quality_score || 0) - (b.quality_score || 0));
+  while (stored.length > target && (stored[0].quality_score || 0) < -200) {
+    stored.shift();
+  }
+  if (stored.length <= target) return stored;
+
   // Stage 1: Remove Dead
   stored = stored.filter(c => c.test_result?.status !== "dead");
   if (stored.length <= target) return stored;
@@ -548,6 +592,10 @@ async function manageStorage(env, newCount) {
     if (testResult.status === "dead") {
        stored.splice(i, 1);
        i--;
+    } else {
+      stored[i].test_result = testResult;
+      const votes = await getConfigVotes(env, stored[i].hash);
+      stored[i].quality_score = calculateQualityScore(stored[i], votes);
     }
   }
   if (stored.length <= target) return stored;
@@ -686,7 +734,7 @@ async function checkAndDistribute(env) {
 
     const votes = await getConfigVotes(env, item.hash);
 
-    newConfigsToStore.push({
+    const configObj = {
       config: item.config, 
       hash: item.hash, 
       type: detectType(item.config),
@@ -695,7 +743,9 @@ async function checkAndDistribute(env) {
       created_at: new Date().toISOString(),
       failed_tests: 0,
       ...extractServer(item.config)
-    });
+    };
+    configObj.quality_score = calculateQualityScore(configObj, votes);
+    newConfigsToStore.push(configObj);
 
     for (const channel of channels) {
       try {
@@ -794,9 +844,9 @@ async function handleWebhook(env, update) {
     );
     
     const sorted = configsWithVotes
-      .filter(c => c.votes.score > 0 || c.test_result?.status === "active")
+      .filter(c => (c.quality_score || 0) > 0 || c.test_result?.status === "active")
       .sort((a, b) => {
-        if (b.votes.score !== a.votes.score) return b.votes.score - a.votes.score;
+        if ((b.quality_score || 0) !== (a.quality_score || 0)) return (b.quality_score || 0) - (a.quality_score || 0);
         return (a.test_result?.latency || 9999) - (b.test_result?.latency || 9999);
       })
       .slice(0, 5);
@@ -873,7 +923,8 @@ async function handleCallback(env, callback) {
     const voteType = data.startsWith("like_") ? "like" : "dislike";
     const votes = await voteConfig(env, hash, userId, voteType);
     
-    await answerCallback(env, callback.id, `Voted! Score: ${votes.score}`);
+    const statusMsg = voteType === 'like' ? `Voted! Score: ${votes.score}` : `Reported! Total reports: ${votes.dislikes.length}`;
+    await answerCallback(env, callback.id, statusMsg);
     
     const stored = await kvGet(env, "stored_configs", []);
     const cfg = stored.find(c => c.hash === hash);
@@ -920,8 +971,8 @@ async function handleCallback(env, callback) {
     );
     
     const sorted = configsWithVotes
-      .filter(c => c.votes.score > 0)
-      .sort((a, b) => b.votes.score - a.votes.score)
+      .filter(c => (c.quality_score || 0) > 0)
+      .sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0))
       .slice(0, 5);
     
     for (const c of sorted) {
@@ -1001,6 +1052,7 @@ async function handleCallback(env, callback) {
 
       // Add to stored configs
       const cleaned = await manageStorage(env, 1);
+      const votes = await getConfigVotes(env, h);
       const newEntry = {
         config: sub.config,
         hash: h,
@@ -1011,6 +1063,7 @@ async function handleCallback(env, callback) {
         failed_tests: testResult.status === "dead" ? 1 : 0,
         ...extractServer(sub.config)
       };
+      newEntry.quality_score = calculateQualityScore(newEntry, votes);
       await kvSet(env, "stored_configs", [newEntry, ...cleaned]);
 
       await sendTelegram(env, chatId, "✅ Approved and published!");
@@ -1461,7 +1514,7 @@ async function handleDashboardAPI(env, request, path) {
     
     switch(sortBy) {
       case "best":
-        stored.sort((a, b) => (b.votes?.score || 0) - (a.votes?.score || 0));
+        stored.sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
         break;
       case "latency":
         stored.sort((a, b) => (a.test_result?.latency || 9999) - (b.test_result?.latency || 9999));
@@ -1496,12 +1549,25 @@ async function handleDashboardAPI(env, request, path) {
     return jsonResp({ error: "Not found" }, 404);
   }
 
-  // Voting - API جدید
+  // Voting - API جدید (Handles single or batch)
   if (path === "/vote" && method === "POST") {
-    const { config_hash, vote } = await request.json();
+    const body = await request.json();
     const userId = userPayload.sub;
-    const votes = await voteConfig(env, config_hash, userId, vote);
-    return jsonResp({ votes });
+
+    if (Array.isArray(body.votes)) {
+      const results = [];
+      for (const item of body.votes) {
+        if (item.hash && item.type) {
+          const v = await voteConfig(env, item.hash, userId, item.type);
+          results.push({ hash: item.hash, votes: v });
+        }
+      }
+      return jsonResp({ results });
+    } else {
+      const { config_hash, vote } = body;
+      const votes = await voteConfig(env, config_hash, userId, vote);
+      return jsonResp({ votes });
+    }
   }
 
   // Templates - API موجود قبلی حفظ شده
@@ -1541,6 +1607,7 @@ async function handleDashboardAPI(env, request, path) {
 
       // Add to stored configs
       const cleaned = await manageStorage(env, 1);
+      const votes = await getConfigVotes(env, h);
       const newEntry = {
         config: sub.config,
         hash: h,
@@ -1551,6 +1618,7 @@ async function handleDashboardAPI(env, request, path) {
         failed_tests: testResult.status === "dead" ? 1 : 0,
         ...extractServer(sub.config)
       };
+      newEntry.quality_score = calculateQualityScore(newEntry, votes);
       await kvSet(env, "stored_configs", [newEntry, ...cleaned]);
 
       return jsonResp({ status: "approved", test_result: testResult });
@@ -1609,6 +1677,8 @@ async function handleDashboardAPI(env, request, path) {
       } else {
         config.failed_tests = 0;
       }
+      const votes = await getConfigVotes(env, config.hash);
+      config.quality_score = calculateQualityScore(config, votes);
       return config;
     });
     
