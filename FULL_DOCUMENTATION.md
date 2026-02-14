@@ -13,6 +13,7 @@ The **VPN Config Bot Pro** is a powerful Cloudflare Worker that automates the li
 - **Intelligent Testing**: Tests each config via DNS-over-HTTPS (Cloudflare) and TCP/HTTPS `HEAD` requests to verify connectivity and measure latency.
 - **Automatic Distribution**: Discovered and tested configs are automatically posted to configured Telegram channels.
 - **Scheduled Cleanup**: Periodically removes dead, stale, or unpopular configurations to maintain a high-quality feed.
+- **Publish Queue**: Paces the distribution of new configurations to avoid flooding channels. Configurable interval and batch size.
 
 ### Telegram User Interface
 - **Monospaced Configs**: All configs are sent in a monospaced format, allowing users to tap and copy them instantly.

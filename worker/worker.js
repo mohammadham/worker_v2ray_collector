@@ -26,7 +26,10 @@ const DEFAULT_SETTINGS = {
   redirectUrl: "",
   activeTemplate: "default",
   rateLimitPerSecond: 30,
-  minLikesToKeep: 1
+  minLikesToKeep: 1,
+  enableQueue: false,
+  queueIntervalMin: 15,
+  queueBatchSize: 1
 };
 
 // ======== KV Helpers with Local Caching ========
@@ -463,6 +466,53 @@ function calculateQualityScore(config, votes) {
   return score;
 }
 
+async function pushToQueue(env, item) {
+  const queue = await kvGet(env, "publish_queue", []);
+  queue.push(item);
+  await kvSet(env, "publish_queue", queue);
+}
+
+async function processQueue(env) {
+  const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
+  if (!settings.enableQueue) return;
+
+  const lastRun = await kvGet(env, "last_queue_run", 0);
+  const now = Date.now();
+  const intervalMs = (settings.queueIntervalMin || 15) * 60 * 1000;
+
+  if (now - lastRun < intervalMs) return;
+
+  const queue = await kvGet(env, "publish_queue", []);
+  if (queue.length === 0) return;
+
+  const batchSize = settings.queueBatchSize || 1;
+  const toProcess = queue.slice(0, batchSize);
+  const remaining = queue.slice(batchSize);
+
+  const channels = await kvGet(env, "channel_ids", [env.CHANNEL_ID]);
+
+  for (const item of toProcess) {
+    for (const ch of channels) {
+      try {
+        let msg, keyboard;
+        if (item.type === "bundle") {
+          msg = await formatMessage(env, null, null, null, ch, item.configs, item.userAttr);
+          keyboard = { inline_keyboard: [[{ text: "📤 Share", url: `https://t.me/share/url?url=${encodeURIComponent(item.configs?.[0] || "")}` }]] };
+        } else {
+          const votes = await getConfigVotes(env, item.hash);
+          msg = await formatMessage(env, item.config, item.testResult, votes, ch);
+          keyboard = configKeyboard(item.config, item.hash, ch);
+        }
+        await sendTelegram(env, ch, msg, keyboard);
+        await new Promise(r => setTimeout(r, 1000));
+      } catch (e) { console.error("Queue send error:", e); }
+    }
+  }
+
+  await kvSet(env, "publish_queue", remaining);
+  await kvSet(env, "last_queue_run", now);
+}
+
 async function updateConfigQualityScore(env, configHash) {
   const stored = await kvGet(env, "stored_configs", []);
   const idx = stored.findIndex(c => c.hash === configHash);
@@ -731,6 +781,7 @@ async function checkAndDistribute(env) {
   if (cache.length > 500) cache = cache.slice(-500);
   await kvSet(env, "configs_cache", cache);
 
+  const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
   const newConfigsToStore = [];
   let sentCount = 0;
   let invalidCount = 0;
@@ -760,13 +811,17 @@ async function checkAndDistribute(env) {
     configObj.quality_score = calculateQualityScore(configObj, votes);
     newConfigsToStore.push(configObj);
 
-    for (const channel of channels) {
-      try {
-        const msg = await formatMessage(env, item.config, testResult, votes, channel);
-        const keyboard = configKeyboard(item.config, item.hash, channel);
-        await sendTelegram(env, channel, msg, keyboard);
-        await new Promise(r => setTimeout(r, 500)); // Slightly faster send
-      } catch (e) { console.error(`Send error to ${channel}:`, e); }
+    if (settings.enableQueue) {
+      await pushToQueue(env, { type: "single", config: item.config, hash: item.hash, testResult });
+    } else {
+      for (const channel of channels) {
+        try {
+          const msg = await formatMessage(env, item.config, testResult, votes, channel);
+          const keyboard = configKeyboard(item.config, item.hash, channel);
+          await sendTelegram(env, channel, msg, keyboard);
+          await new Promise(r => setTimeout(r, 500));
+        } catch (e) { console.error(`Send error to ${channel}:`, e); }
+      }
     }
     sentCount++;
   }
@@ -1048,16 +1103,19 @@ async function handleCallback(env, callback) {
     const subs = await kvGet(env, "submissions", []);
     const sub = subs.find(s => s.status === "pending" && (s.id === id || hashConfig(s.configs?.[0] || "") === id));
     if (sub) {
-      const channels = await kvGet(env, "channel_ids", [env.CHANNEL_ID]);
+      const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
       const userAttr = sub.username !== "unknown" ? `@${sub.username}` : `User ${sub.submitted_by}`;
 
-      const msg = await formatMessage(env, null, null, null, null, sub.configs, userAttr);
-      
-      for (const ch of channels) {
-        // Simple keyboard for bundles
-        const keyboard = { inline_keyboard: [[{ text: "📤 Share", url: `https://t.me/share/url?url=${encodeURIComponent(sub.configs?.[0] || "")}` }]] };
-        await sendTelegram(env, ch, msg, keyboard);
-        await new Promise(r => setTimeout(r, 1000));
+      if (settings.enableQueue) {
+        await pushToQueue(env, { type: "bundle", configs: sub.configs, userAttr });
+      } else {
+        const channels = await kvGet(env, "channel_ids", [env.CHANNEL_ID]);
+        const msg = await formatMessage(env, null, null, null, null, sub.configs, userAttr);
+        for (const ch of channels) {
+          const keyboard = { inline_keyboard: [[{ text: "📤 Share", url: `https://t.me/share/url?url=${encodeURIComponent(sub.configs?.[0] || "")}` }]] };
+          await sendTelegram(env, ch, msg, keyboard);
+          await new Promise(r => setTimeout(r, 1000));
+        }
       }
       
       sub.status = "approved";
@@ -1298,6 +1356,7 @@ async function loadStats(){
     '<div class="stat-card glass"><div class="num">'+(d.source_links||0)+'</div><div class="label">Links</div></div>'+
     '<div class="stat-card glass"><div class="num">'+(d.channels||0)+'</div><div class="label">Channels</div></div>'+
     '<div class="stat-card glass"><div class="num">'+(d.pending_submissions||0)+'</div><div class="label">Pending</div></div>'+
+    '<div class="stat-card glass"><div class="num">'+(d.queue_size||0)+'</div><div class="label">Queue</div></div>'+
     '<div class="stat-card glass"><div class="num">'+(d.total_votes||0)+'</div><div class="label">Total Votes</div></div>';
 }
 async function loadLinks(){
@@ -1384,7 +1443,10 @@ async function loadSettings(){
     '<div class="settings-item"><label>Auto Delete Days (no likes)</label><input type="number" id="setting-autoDeleteDays" value="'+(s.autoDeleteDays||3)+'"></div>'+
     '<div class="settings-item"><label>Stale Delete Days (no update)</label><input type="number" id="setting-staleDeleteDays" value="'+(s.staleDeleteDays||5)+'"></div>'+
     '<div class="settings-item"><label>Min Likes to Keep</label><input type="number" id="setting-minLikesToKeep" value="'+(s.minLikesToKeep||1)+'"></div>'+
-    '<div class="settings-item"><label>Rate Limit (msg/s)</label><input type="number" id="setting-rateLimit" value="'+(s.rateLimitPerSecond||30)+'"></div>';
+    '<div class="settings-item"><label>Rate Limit (msg/s)</label><input type="number" id="setting-rateLimit" value="'+(s.rateLimitPerSecond||30)+'"></div>'+
+    '<div class="settings-item"><label>Queue Interval (min)</label><input type="number" id="setting-queueInterval" value="'+(s.queueIntervalMin||15)+'"></div>'+
+    '<div class="settings-item"><label>Queue Batch Size</label><input type="number" id="setting-queueBatch" value="'+(s.queueBatchSize||1)+'"></div>'+
+    '<div class="settings-item"><label>Enable Queue</label><select id="setting-enableQueue"><option value="false" '+(s.enableQueue?'':'selected')+'>Disabled</option><option value="true" '+(s.enableQueue?'selected':'')+'>Enabled</option></select></div>';
   
   document.getElementById("enable-redirect").checked=s.enableRedirect||false;
   document.getElementById("redirect-url").value=s.redirectUrl||"";
@@ -1395,7 +1457,10 @@ async function saveSettings(){
     autoDeleteDays:parseInt(document.getElementById("setting-autoDeleteDays").value),
     staleDeleteDays:parseInt(document.getElementById("setting-staleDeleteDays").value),
     minLikesToKeep:parseInt(document.getElementById("setting-minLikesToKeep").value),
-    rateLimitPerSecond:parseInt(document.getElementById("setting-rateLimit").value)
+    rateLimitPerSecond:parseInt(document.getElementById("setting-rateLimit").value),
+    queueIntervalMin:parseInt(document.getElementById("setting-queueInterval").value),
+    queueBatchSize:parseInt(document.getElementById("setting-queueBatch").value),
+    enableQueue:document.getElementById("setting-enableQueue").value === "true"
   };
   await api("/settings","POST",{key:"all",value:settings});
   alert("Settings saved!");
@@ -1477,6 +1542,7 @@ async function handleDashboardAPI(env, request, path) {
     const links = await kvGet(env, "source_links", []);
     const channels = await kvGet(env, "channel_ids", []);
     const subs = await kvGet(env, "submissions", []);
+    const queue = await kvGet(env, "publish_queue", []);
     
     let totalVotes = 0;
     for (const c of stored) {
@@ -1490,6 +1556,7 @@ async function handleDashboardAPI(env, request, path) {
       source_links: links.length,
       channels: channels.length,
       pending_submissions: subs.filter(s => s.status === "pending").length,
+      queue_size: queue.length,
       total_votes: totalVotes
     });
   }
@@ -1625,13 +1692,18 @@ async function handleDashboardAPI(env, request, path) {
     const subs = await kvGet(env, "submissions", []);
     const sub = subs.find(s => s.status === "pending" && (s.id === id || hashConfig(s.configs?.[0] || "") === id));
     if (sub) {
-      const channels = await kvGet(env, "channel_ids", [env.CHANNEL_ID]);
+      const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
       const userAttr = sub.username !== "unknown" ? `@${sub.username}` : `User ${sub.submitted_by}`;
-      const msg = await formatMessage(env, null, null, null, null, sub.configs, userAttr);
 
-      for (const ch of channels) {
-        const keyboard = { inline_keyboard: [[{ text: "📤 Share", url: `https://t.me/share/url?url=${encodeURIComponent(sub.configs?.[0] || "")}` }]] };
-        await sendTelegram(env, ch, msg, keyboard);
+      if (settings.enableQueue) {
+        await pushToQueue(env, { type: "bundle", configs: sub.configs, userAttr });
+      } else {
+        const channels = await kvGet(env, "channel_ids", [env.CHANNEL_ID]);
+        const msg = await formatMessage(env, null, null, null, null, sub.configs, userAttr);
+        for (const ch of channels) {
+          const keyboard = { inline_keyboard: [[{ text: "📤 Share", url: `https://t.me/share/url?url=${encodeURIComponent(sub.configs?.[0] || "")}` }]] };
+          await sendTelegram(env, ch, msg, keyboard);
+        }
       }
       sub.status = "approved";
       await kvSet(env, "submissions", subs);
@@ -1839,6 +1911,7 @@ export default {
     // Cron job برای fetch و cleanup
     ctx.waitUntil(checkAndDistribute(env));
     ctx.waitUntil(cleanupConfigs(env));
+    ctx.waitUntil(processQueue(env));
   }
 };
 
