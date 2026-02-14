@@ -13,7 +13,8 @@ const DEFAULT_TEMPLATES = {
   vmess: "🔵 *VMess Config*\n🌍 Server: {server}\n📍 Location: {location}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}",
   trojan: "🔴 *Trojan Config*\n🌍 Server: {server}\n📍 Location: {location}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}",
   ss: "🟡 *Shadowsocks Config*\n🌍 Server: {server}\n📍 Location: {location}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}",
-  default: "⚪ *VPN Config*\n🌍 Server: {server}\n📍 Location: {location}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}"
+  default: "⚪ *VPN Config*\n🌍 Server: {server}\n📍 Location: {location}\n📊 Status: {status}\n⭐ Rating: {rating}\n📢 {channel}",
+  user_bundle: "🎁 *User Contribution*\n👤 Contributor: {user}\n📦 Total: {count} configs\n\n{configs}\n\n📢 {channel}"
 };
 
 const DEFAULT_SETTINGS = {
@@ -517,10 +518,23 @@ function configKeyboard(config, hash, channelInfo = null) {
 }
 
 // ======== Format Message ========
-async function formatMessage(env, config, testResult, votes = null, channelInfo = null) {
+async function formatMessage(env, config, testResult, votes = null, channelInfo = null, bundleConfigs = null, userAttr = null) {
   const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
   const templates = await kvGet(env, "message_templates", DEFAULT_TEMPLATES);
   
+  const channel = channelInfo || "VPN Config Bot";
+
+  // Handle bundle case
+  if (bundleConfigs && Array.isArray(bundleConfigs)) {
+    const template = templates.user_bundle || DEFAULT_TEMPLATES.user_bundle;
+    const configsText = bundleConfigs.map(c => `\`${c}\``).join("\n\n");
+    return template
+      .replace(/{configs}/g, configsText)
+      .replace(/{user}/g, userAttr || "Anonymous")
+      .replace(/{count}/g, bundleConfigs.length)
+      .replace(/{channel}/g, channel);
+  }
+
   let templateKey = settings.activeTemplate;
   if (templateKey === 'default' || !templates[templateKey]) {
     templateKey = detectType(config);
@@ -532,7 +546,6 @@ async function formatMessage(env, config, testResult, votes = null, channelInfo 
   const emoji = testResult.status === "active" ? "✅" : testResult.status === "dns_only" ? "⚠️" : "❌";
   
   const rating = votes ? `👍 ${votes.likes.length} | 👎 ${votes.dislikes.length}` : "N/A";
-  const channel = channelInfo || "VPN Config Bot";
   const flag = getFlag(testResult.countryCode);
   const location = `${flag} ${testResult.country || "Unknown"}`;
   
@@ -548,9 +561,9 @@ async function formatMessage(env, config, testResult, votes = null, channelInfo 
 }
 
 // ======== Cleanup Logic ========
-async function manageStorage(env, newCount) {
+async function manageStorage(env, newCount, configsArray = null) {
   const MAX_CONFIGS = 1000;
-  let stored = await kvGet(env, "stored_configs", []);
+  let stored = configsArray || await kvGet(env, "stored_configs", []);
 
   if (stored.length + newCount <= MAX_CONFIGS) return stored;
 
@@ -789,17 +802,16 @@ async function handleWebhook(env, update) {
       const subs = await kvGet(env, "submissions", []);
       const sources = extractChannelSource(text, configs[0]);
       
-      for (const cfg of configs) {
-        subs.push({
-          config: cfg, 
-          type: detectType(cfg), 
-          submitted_by: chatId,
-          username: message.from?.username || "unknown", 
-          status: "pending",
-          sources: sources,
-          created_at: new Date().toISOString()
-        });
-      }
+      subs.push({
+        id: Math.random().toString(36).substring(2, 10),
+        configs: configs,
+        submitted_by: chatId,
+        username: message.from?.username || "unknown",
+        status: "pending",
+        sources: sources,
+        created_at: new Date().toISOString()
+      });
+
       await kvSet(env, "submissions", subs);
       await sendTelegram(env, chatId, `✅ ${configs.length} config(s) submitted!\nSources: ${sources.join(', ') || 'Unknown'}`);
     } else {
@@ -891,17 +903,16 @@ async function handleWebhook(env, update) {
       const subs = await kvGet(env, "submissions", []);
       const sources = extractChannelSource(text, configs[0]);
       
-      for (const cfg of configs) {
-        subs.push({ 
-          config: cfg, 
-          type: detectType(cfg), 
-          submitted_by: chatId, 
-          username: message.from?.username || "unknown", 
-          status: "pending", 
-          sources: sources,
-          created_at: new Date().toISOString() 
-        });
-      }
+      subs.push({
+        id: Math.random().toString(36).substring(2, 10),
+        configs: configs,
+        submitted_by: chatId,
+        username: message.from?.username || "unknown",
+        status: "pending",
+        sources: sources,
+        created_at: new Date().toISOString()
+      });
+
       await kvSet(env, "submissions", subs);
       await sendTelegram(env, chatId, `✅ ${configs.length} config(s) submitted!\nSources: ${sources.join(', ') || 'Unknown'}`);
     } else {
@@ -1022,56 +1033,65 @@ async function handleCallback(env, callback) {
     const pending = subs.filter(s => s.status === "pending").slice(0, 10);
     if (pending.length) {
       for (const s of pending) {
-        const h = hashConfig(s.config);
-        await sendTelegram(env, chatId, `📤 From @${s.username}\nType: ${s.type}\nSources: ${(s.sources || []).join(', ') || 'Unknown'}\n\n\`${s.config}\``, {
+        const id = s.id || hashConfig(s.configs?.[0] || "");
+        const configsPreview = (s.configs || []).slice(0, 3).map(c => `\`${c.substring(0, 50)}...\``).join("\n");
+        await sendTelegram(env, chatId, `📤 From @${s.username}\n📦 Total: ${s.configs?.length || 0} configs\nSources: ${(s.sources || []).join(', ') || 'Unknown'}\n\n${configsPreview}`, {
           inline_keyboard: [[
-            { text: "✅ Approve", callback_data: `approve_${h}` },
-            { text: "❌ Reject", callback_data: `reject_${h}` }
+            { text: "✅ Approve", callback_data: `approve_${id}` },
+            { text: "❌ Reject", callback_data: `reject_${id}` }
           ]]
         });
       }
     } else { await sendTelegram(env, chatId, "No pending submissions."); }
   } else if (data.startsWith("approve_") && isAdmin) {
-    const h = data.replace("approve_", "");
+    const id = data.replace("approve_", "");
     const subs = await kvGet(env, "submissions", []);
-    const sub = subs.find(s => s.status === "pending" && hashConfig(s.config) === h);
+    const sub = subs.find(s => s.status === "pending" && (s.id === id || hashConfig(s.configs?.[0] || "") === id));
     if (sub) {
-      const testResult = await testConfig(sub.config);
-      const votes = await getConfigVotes(env, h);
       const channels = await kvGet(env, "channel_ids", [env.CHANNEL_ID]);
+      const userAttr = sub.username !== "unknown" ? `@${sub.username}` : `User ${sub.submitted_by}`;
+
+      const msg = await formatMessage(env, null, null, null, null, sub.configs, userAttr);
       
       for (const ch of channels) {
-        // Send user submissions "as-is" (raw monospaced)
-        const msg = `\`${sub.config}\``;
-        await sendTelegram(env, ch, msg, configKeyboard(sub.config, h, ch));
+        // Simple keyboard for bundles
+        const keyboard = { inline_keyboard: [[{ text: "📤 Share", url: `https://t.me/share/url?url=${encodeURIComponent(sub.configs?.[0] || "")}` }]] };
+        await sendTelegram(env, ch, msg, keyboard);
         await new Promise(r => setTimeout(r, 1000));
       }
       
       sub.status = "approved";
       await kvSet(env, "submissions", subs);
 
-      // Add to stored configs
-      const cleaned = await manageStorage(env, 1);
-      const votes = await getConfigVotes(env, h);
-      const newEntry = {
-        config: sub.config,
-        hash: h,
-        type: sub.type,
-        sources: sub.sources,
-        test_result: testResult,
-        created_at: new Date().toISOString(),
-        failed_tests: testResult.status === "dead" ? 1 : 0,
-        ...extractServer(sub.config)
-      };
-      newEntry.quality_score = calculateQualityScore(newEntry, votes);
-      await kvSet(env, "stored_configs", [newEntry, ...cleaned]);
+      // Add to stored configs (individually)
+      let currentStored = await kvGet(env, "stored_configs", []);
+      for (const cfg of (sub.configs || [])) {
+        const h = hashConfig(cfg);
+        const testResult = await testConfig(cfg);
+        const votes = await getConfigVotes(env, h);
+        const newEntry = {
+          config: cfg,
+          hash: h,
+          type: detectType(cfg),
+          sources: sub.sources,
+          test_result: testResult,
+          created_at: new Date().toISOString(),
+          failed_tests: testResult.status === "dead" ? 1 : 0,
+          ...extractServer(cfg)
+        };
+        newEntry.quality_score = calculateQualityScore(newEntry, votes);
+        currentStored.unshift(newEntry);
+      }
+
+      const cleaned = await manageStorage(env, 0, currentStored);
+      await kvSet(env, "stored_configs", cleaned.slice(0, 1000));
 
       await sendTelegram(env, chatId, "✅ Approved and published!");
     }
   } else if (data.startsWith("reject_") && isAdmin) {
-    const h = data.replace("reject_", "");
+    const id = data.replace("reject_", "");
     const subs = await kvGet(env, "submissions", []);
-    const sub = subs.find(s => s.status === "pending" && hashConfig(s.config) === h);
+    const sub = subs.find(s => s.status === "pending" && (s.id === id || hashConfig(s.configs?.[0] || "") === id));
     if (sub) { 
       sub.status = "rejected"; 
       await kvSet(env, "submissions", subs); 
@@ -1191,15 +1211,19 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 <div class="pagination" id="pagination"></div>
 </div>
 <div id="templates" class="section glass">
-<div style="margin-bottom:16px">
+<div style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center">
+<div>
 <label style="color:#00d4ff">Active Template:</label>
-<select id="active-template" onchange="setActiveTemplate()">
+<select id="active-template" onchange="setActiveTemplate()" style="width:200px">
 <option value="default">Default (Auto-detect)</option>
 <option value="vless">VLESS Style</option>
 <option value="vmess">VMess Style</option>
 <option value="trojan">Trojan Style</option>
 <option value="ss">Shadowsocks Style</option>
+<option value="user_bundle">User Bundle Style</option>
 </select>
+</div>
+<button class="btn-danger" onclick="resetTemplates()">Reset All to Defaults</button>
 </div>
 <div id="templates-list"></div>
 </div>
@@ -1336,19 +1360,22 @@ async function loadTemplates(){
     '<div style="margin-bottom:16px"><label style="color:#00d4ff;font-weight:600">'+k+'</label><textarea id="tmpl_'+k+'" style="margin-top:8px;height:80px">'+v+'</textarea><button class="btn-sm" onclick="saveTemplate(\\''+k+'\\')">Save</button></div>'
   ).join("");
 }
-async function saveTemplate(type){const v=document.getElementById("tmpl_"+type).value;await api("/templates","POST",{type,template:v});}
+async function saveTemplate(type){const v=document.getElementById("tmpl_"+type).value;await api("/templates","POST",{type,template:v});alert("Saved!");}
+async function resetTemplates(){if(confirm("Are you sure you want to reset all templates to default values?")){await api("/templates/reset","POST");loadTemplates();}}
 async function setActiveTemplate(){
   const template=document.getElementById("active-template").value;
   await api("/settings","POST",{key:"activeTemplate",value:template});
 }
 async function loadSubmissions(){
   const d=await api("/submissions");
-  document.getElementById("submissions-list").innerHTML=(d.submissions||[]).map(s=>
-    '<div class="config-card"><span class="badge badge-pending">'+s.type+'</span> @'+s.username+'<div style="color:#888;font-size:12px;margin:4px 0">Sources: '+(s.sources?.join(', ')||'Unknown')+'</div><code>'+s.config+'</code><div style="margin-top:8px"><button class="btn-success" onclick="approveSub(\\''+btoa(s.config)+'\\')">✅ Approve</button> <button class="btn-danger" onclick="rejectSub(\\''+btoa(s.config)+'\\')">❌ Reject</button></div></div>'
-  ).join("")||"<p>No pending submissions.</p>";
+  document.getElementById("submissions-list").innerHTML=(d.submissions||[]).map(s=>{
+    const id = s.id || btoa(s.configs?.[0] || "");
+    const preview = (s.configs || []).slice(0, 2).join("\n");
+    return '<div class="config-card"><span class="badge badge-pending">Bundle ('+(s.configs?.length||0)+')</span> @'+s.username+'<div style="color:#888;font-size:12px;margin:4px 0">Sources: '+(s.sources?.join(', ')||'Unknown')+'</div><code>'+preview+'...</code><div style="margin-top:8px"><button class="btn-success" onclick="approveSub(\\''+id+'\\')">✅ Approve</button> <button class="btn-danger" onclick="rejectSub(\\''+id+'\\')">❌ Reject</button></div></div>';
+  }).join("")||"<p>No pending submissions.</p>";
 }
-async function approveSub(b64){await api("/submissions/approve","POST",{config:atob(b64)});loadSubmissions();loadStats();}
-async function rejectSub(b64){await api("/submissions/reject","POST",{config:atob(b64)});loadSubmissions();loadStats();}
+async function approveSub(id){await api("/submissions/approve","POST",{id});loadSubmissions();loadStats();}
+async function rejectSub(id){await api("/submissions/reject","POST",{id});loadSubmissions();loadStats();}
 async function loadSettings(){
   const d=await api("/settings");
   const s=d.settings||{};
@@ -1583,6 +1610,10 @@ async function handleDashboardAPI(env, request, path) {
     await kvSet(env, "message_templates", templates);
     return jsonResp({ templates });
   }
+  if (path === "/templates/reset" && method === "POST") {
+    await kvSet(env, "message_templates", DEFAULT_TEMPLATES);
+    return jsonResp({ templates: DEFAULT_TEMPLATES });
+  }
 
   // Submissions - API موجود قبلی حفظ شده
   if (path === "/submissions" && method === "GET") {
@@ -1590,45 +1621,46 @@ async function handleDashboardAPI(env, request, path) {
     return jsonResp({ submissions: subs.filter(s => s.status === "pending").slice(0, 50) });
   }
   if (path === "/submissions/approve" && method === "POST") {
-    const { config } = await request.json();
+    const { id } = await request.json();
     const subs = await kvGet(env, "submissions", []);
-    const sub = subs.find(s => s.config === config && s.status === "pending");
+    const sub = subs.find(s => s.status === "pending" && (s.id === id || hashConfig(s.configs?.[0] || "") === id));
     if (sub) {
-      const testResult = await testConfig(config);
-      const h = hashConfig(config);
       const channels = await kvGet(env, "channel_ids", [env.CHANNEL_ID]);
+      const userAttr = sub.username !== "unknown" ? `@${sub.username}` : `User ${sub.submitted_by}`;
+      const msg = await formatMessage(env, null, null, null, null, sub.configs, userAttr);
+
       for (const ch of channels) {
-        // Send user submissions "as-is" (raw monospaced)
-        const msg = `\`${config}\``;
-        await sendTelegram(env, ch, msg, configKeyboard(config, h, ch));
+        const keyboard = { inline_keyboard: [[{ text: "📤 Share", url: `https://t.me/share/url?url=${encodeURIComponent(sub.configs?.[0] || "")}` }]] };
+        await sendTelegram(env, ch, msg, keyboard);
       }
       sub.status = "approved";
       await kvSet(env, "submissions", subs);
 
-      // Add to stored configs
-      const cleaned = await manageStorage(env, 1);
-      const votes = await getConfigVotes(env, h);
-      const newEntry = {
-        config: sub.config,
-        hash: h,
-        type: sub.type,
-        sources: sub.sources,
-        test_result: testResult,
-        created_at: new Date().toISOString(),
-        failed_tests: testResult.status === "dead" ? 1 : 0,
-        ...extractServer(sub.config)
-      };
-      newEntry.quality_score = calculateQualityScore(newEntry, votes);
-      await kvSet(env, "stored_configs", [newEntry, ...cleaned]);
+      // Add to stored configs (individually)
+      let currentStored = await kvGet(env, "stored_configs", []);
+      for (const cfg of (sub.configs || [])) {
+        const h = hashConfig(cfg);
+        const testResult = await testConfig(cfg);
+        const votes = await getConfigVotes(env, h);
+        const newEntry = {
+          config: cfg, hash: h, type: detectType(cfg), sources: sub.sources,
+          test_result: testResult, created_at: new Date().toISOString(),
+          failed_tests: testResult.status === "dead" ? 1 : 0, ...extractServer(cfg)
+        };
+        newEntry.quality_score = calculateQualityScore(newEntry, votes);
+        currentStored.unshift(newEntry);
+      }
+      const cleaned = await manageStorage(env, 0, currentStored);
+      await kvSet(env, "stored_configs", cleaned.slice(0, 1000));
 
-      return jsonResp({ status: "approved", test_result: testResult });
+      return jsonResp({ status: "approved" });
     }
     return jsonResp({ error: "Not found" }, 404);
   }
   if (path === "/submissions/reject" && method === "POST") {
-    const { config } = await request.json();
+    const { id } = await request.json();
     const subs = await kvGet(env, "submissions", []);
-    const sub = subs.find(s => s.config === config && s.status === "pending");
+    const sub = subs.find(s => s.status === "pending" && (s.id === id || hashConfig(s.configs?.[0] || "") === id));
     if (sub) { sub.status = "rejected"; await kvSet(env, "submissions", subs); }
     return jsonResp({ status: "rejected" });
   }

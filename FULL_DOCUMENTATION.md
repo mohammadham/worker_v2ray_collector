@@ -16,6 +16,7 @@ The **VPN Config Bot Pro** is a powerful Cloudflare Worker that automates the li
 
 ### Telegram User Interface
 - **Monospaced Configs**: All configs are sent in a monospaced format, allowing users to tap and copy them instantly.
+- **Bundle Submissions**: If a user sends multiple configurations in one message, the bot groups them into a single "Bundle" for approval.
 - **Quality Reporting**: Users can report dead or slow configurations using the **👎 Report** button. High report counts negatively impact the config's Quality Score.
 - **Quality Score**: A sophisticated scoring system that combines automated test results, user reports, and "Auto-Likes" from external sources (e.g., Android App).
 - **On-Demand Retrieval**: Users can fetch the `/latest` or `/best` (highest Quality Score) configurations directly through the bot.
@@ -23,7 +24,8 @@ The **VPN Config Bot Pro** is a powerful Cloudflare Worker that automates the li
 
 ### Admin Features
 - **Dashboard API & UI**: A complete web-based management interface for monitoring stats, managing links/channels, and approving submissions.
-- **Customizable Templates**: Admins can edit message templates per protocol using placeholders like `{server}`, `{status}`, `{rating}`, `{latency}`, `{channel}`, and `{location}`.
+- **Customizable Templates**: Admins can edit message templates per protocol using placeholders like `{server}`, `{status}`, `{rating}`, `{latency}`, `{channel}`, `{location}`, `{user}`, `{count}`, and `{configs}`.
+- **Template Reset**: Ability to instantly restore all message templates to their default values from the dashboard.
 - **Manual Control**: Force cleanup or fetch operations via Telegram commands or the dashboard.
 - **Submission Management**: Review pending user submissions with one-click approve/reject functionality.
 
@@ -145,6 +147,7 @@ The bot provides a REST API for management and integration. All dashboard endpoi
 ### Management Endpoints (Auth Required)
 - **GET `/dashboard/api/stats`**: Get system statistics.
 - **GET `/dashboard/api/configs?sort=newest&limit=20&page=1`**: Fetch stored configs.
+- **POST `/dashboard/api/templates/reset`**: Restore all templates to defaults.
 - **POST `/dashboard/api/fetch-now`**: Trigger manual config scraping.
 - **POST `/dashboard/api/vote`**: Submit votes (single or batch).
   - Single: `{"config_hash": "...", "vote": "like|dislike"}`
