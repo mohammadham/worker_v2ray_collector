@@ -1496,6 +1496,18 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
   if (localStorage.getItem('token')) {
     document.getElementById('login-container').style.display = 'none';
     document.getElementById('dashboardz').style.display = 'block';
+        
+    // Wait for showDashboard to be defined, then call it to load data
+    var waitForDashboard = setInterval(function() {
+      if (typeof window.showDashboard === 'function' && window.showDashboard !== undefined) {
+        clearInterval(waitForDashboard);
+        console.log("Calling showDashboard from early script...");
+        window.showDashboard();
+      }
+    }, 50);
+    
+    // Timeout after 5 seconds
+    setTimeout(function() { clearInterval(waitForDashboard); }, 5000);
   }
 </script>
 <div class="header glass">
@@ -1658,9 +1670,16 @@ window.logout = function() {
 };
 
 window.showDashboard = async function() {
+  // Prevent double execution
+  if (window._dashboardLoaded) {
+    console.log("Dashboard already loaded, skipping...");
+    return;
+  }
+  window._dashboardLoaded = true;
   console.log("Initializing Dashboard...");
   if (!TOKEN) {
     console.log("No token found, staying on login screen.");
+    window._dashboardLoaded = false;
     return;
   }
 
