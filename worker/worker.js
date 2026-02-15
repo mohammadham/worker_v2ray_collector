@@ -1470,11 +1470,16 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 <script>
   if (localStorage.getItem('token')) {
     document.getElementById('login-container').style.display = 'none';
-    document.getElementById('dashboardz').style.display = 'block';
   }
 </script>
 </div>
 <div id="dashboardz" style="display:none">
+<script>
+  if (localStorage.getItem('token')) {
+    document.getElementById('login-container').style.display = 'none';
+    document.getElementById('dashboardz').style.display = 'block';
+  }
+</script>
 <div class="header glass">
 <h1>🌐 VPN Bot Pro Dashboard</h1>
 <button class="btn-danger" onclick="logout()">Logout</button>
