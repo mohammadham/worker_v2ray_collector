@@ -513,7 +513,18 @@ async function voteConfig(env, configHash, userId, voteType) {
   votes.lastVote = new Date().toISOString();
   
   await kvSet(env, `votes_${configHash}`, votes);
-  await updateConfigQualityScore(env, configHash);
+
+  // Update stored_configs cache for this config
+  const stored = await kvGet(env, "stored_configs", []);
+  const idx = stored.findIndex(c => c.hash === configHash);
+  if (idx !== -1) {
+    stored[idx].likes_count = votes.likes.length;
+    stored[idx].dislikes_count = votes.dislikes.length;
+    stored[idx].vote_score = votes.score;
+    stored[idx].quality_score = calculateQualityScore(stored[idx]);
+    await kvSet(env, "stored_configs", stored);
+  }
+
   return votes;
 }
 
@@ -521,11 +532,11 @@ async function getConfigVotes(env, configHash) {
   return await kvGet(env, `votes_${configHash}`, { likes: [], dislikes: [], score: 0 });
 }
 
-function calculateQualityScore(config, votes) {
+function calculateQualityScore(config) {
   let score = 0;
   // 1. Voting weight (High impact)
-  score += (votes.likes?.length || 0) * 50;
-  score -= (votes.dislikes?.length || 0) * 100;
+  score += (config.likes_count || 0) * 50;
+  score -= (config.dislikes_count || 0) * 100;
 
   // 2. Latency weight
   if (config.test_result?.status === "active" && config.test_result?.latency > 0) {
@@ -598,7 +609,10 @@ async function updateConfigQualityScore(env, configHash) {
   if (idx === -1) return null;
 
   const votes = await getConfigVotes(env, configHash);
-  stored[idx].quality_score = calculateQualityScore(stored[idx], votes);
+  stored[idx].likes_count = votes.likes.length;
+  stored[idx].dislikes_count = votes.dislikes.length;
+  stored[idx].vote_score = votes.score;
+  stored[idx].quality_score = calculateQualityScore(stored[idx]);
 
   await kvSet(env, "stored_configs", stored);
   return stored[idx].quality_score;
@@ -756,7 +770,10 @@ async function manageStorage(env, newCount, configsArray = null) {
     } else {
       stored[i].test_result = testResult;
       const votes = await getConfigVotes(env, stored[i].hash);
-      stored[i].quality_score = calculateQualityScore(stored[i], votes);
+      stored[i].likes_count = votes.likes.length;
+      stored[i].dislikes_count = votes.dislikes.length;
+      stored[i].vote_score = votes.score;
+      stored[i].quality_score = calculateQualityScore(stored[i]);
     }
   }
   if (stored.length <= target) return stored;
@@ -904,9 +921,12 @@ async function checkAndDistribute(env) {
       test_result: testResult, 
       created_at: new Date().toISOString(),
       failed_tests: 0,
+      likes_count: votes.likes.length,
+      dislikes_count: votes.dislikes.length,
+      vote_score: votes.score,
       ...extractServer(item.config)
     };
-    configObj.quality_score = calculateQualityScore(configObj, votes);
+    configObj.quality_score = calculateQualityScore(configObj);
     newConfigsToStore.push(configObj);
 
     if (settings.enableQueue) {
@@ -1372,9 +1392,12 @@ async function handleCallback(env, callback) {
           test_result: testResult,
           created_at: new Date().toISOString(),
           failed_tests: testResult.status === "dead" ? 1 : 0,
+        likes_count: votes.likes.length,
+        dislikes_count: votes.dislikes.length,
+        vote_score: votes.score,
           ...extractServer(cfg)
         };
-        newEntry.quality_score = calculateQualityScore(newEntry, votes);
+      newEntry.quality_score = calculateQualityScore(newEntry);
         currentStored.unshift(newEntry);
       }
 
@@ -1465,51 +1488,16 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 <h1>🌐 VPN Bot Pro Panel</h1>
 <input id="username" placeholder="Username" autocomplete="off">
 <input id="password" type="password" placeholder="Password">
-<button class="btn-primary" onclick="login()">Login</button>
+<button class="btn-primary" onclick="performLogin()">Login</button>
 <p id="login-error" style="color:#f55;margin-top:12px;display:none"></p>
 <script>
   if (localStorage.getItem('token')) {
     document.getElementById('login-container').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'block';
   }
 </script>
 </div>
-<div id="dashboardz" style="display:none">
-<script>
-// Early function definitions to prevent "not defined" errors
-  window.logout = window.logout || function() {
-    localStorage.removeItem('token');
-    window.location.reload();
-  };
-  window.showTab = window.showTab || function(name) {
-    document.querySelectorAll(".section").forEach(function(s){s.classList.remove("active");});
-    document.querySelectorAll(".tab").forEach(function(t){t.classList.remove("active");});
-    var el = document.getElementById(name);
-    if(el) el.classList.add("active");
-    // Find and activate the clicked tab
-    var tabs = document.querySelectorAll(".tab");
-    tabs.forEach(function(t){
-      if(t.textContent.indexOf(name) > -1 || t.getAttribute('onclick').indexOf(name) > -1) {
-        t.classList.add("active");
-      }
-    });
-  };
-  if (localStorage.getItem('token')) {
-    document.getElementById('login-container').style.display = 'none';
-    document.getElementById('dashboardz').style.display = 'block';
-        
-    // Wait for showDashboard to be defined, then call it to load data
-    var waitForDashboard = setInterval(function() {
-      if (typeof window.showDashboard === 'function' && window.showDashboard !== undefined) {
-        clearInterval(waitForDashboard);
-        console.log("Calling showDashboard from early script...");
-        window.showDashboard();
-      }
-    }, 50);
-    
-    // Timeout after 5 seconds
-    setTimeout(function() { clearInterval(waitForDashboard); }, 5000);
-  }
-</script>
+<div id="dashboard" style="display:none">
 <div class="header glass">
 <h1>🌐 VPN Bot Pro Dashboard</h1>
 <button class="btn-danger" onclick="logout()">Logout</button>
@@ -1592,118 +1580,117 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 </div>
 <div class="loading" id="loading">Processing...</div>
 
+<!-- Global Error Handler -->
+<script>
+window.onerror = function(msg, url, line, col, error) {
+  console.error("Global JS Error:", msg, "at", url, ":", line);
+  alert("Dashboard Error: " + msg + " (See console for details)");
+  return false;
+};
+</script>
+
 <!-- Script 1: Basic Login Logic -->
 <script>
-async function login() {
-  var u = document.getElementById('username').value;
-  var p = document.getElementById('password').value;
-  var err = document.getElementById('login-error');
-  var ld = document.getElementById('loading');
+(function() {
+  window.performLogin = async function() {
+    var u = document.getElementById('username').value;
+    var p = document.getElementById('password').value;
+    var err = document.getElementById('login-error');
+    var ld = document.getElementById('loading');
 
-  if (!err || !ld) return;
+    if (!err || !ld) return;
 
-  err.style.display = 'none';
-  ld.style.display = 'block';
+    err.style.display = 'none';
+    ld.style.display = 'block';
 
-  try {
-    var resp = await fetch('/dashboard/api/login', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({username: u, password: p})
-    });
-    var data = await resp.json();
-    ld.style.display = 'none';
+    try {
+      console.log("Attempting login for:", u);
+      var resp = await fetch('/dashboard/api/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: u, password: p})
+      });
+      var data = await resp.json();
+      ld.style.display = 'none';
 
-    if (resp.ok && data.token) {
-      localStorage.setItem('token', data.token);
-      window.location.reload();
-    } else {
-      err.style.display = 'block';
-      err.textContent = data.error || 'Invalid credentials';
+      if (resp.ok && data.token) {
+        console.log("Login successful, saving token and reloading...");
+        localStorage.setItem('token', data.token);
+        setTimeout(function() { window.location.reload(); }, 100);
+      } else {
+        err.style.display = 'block';
+        err.textContent = data.error || 'Invalid credentials';
+      }
+    } catch (e) {
+      if(ld) ld.style.display = 'none';
+      if(err) { err.style.display = 'block'; err.textContent = 'Connection error: ' + e.message; }
+      console.error("Login exception:", e);
     }
-  } catch (e) {
-    ld.style.display = 'none';
-    err.style.display = 'block';
-    err.textContent = 'Connection error: ' + e.message;
-  }
-}
-window.login = login;
+  };
+})();
 </script>
 
 <!-- Script 2: Main Dashboard Logic -->
 <script>
-var TOKEN = localStorage.getItem('token') || "";
-var API = "/dashboard/api";
-var currentPage = 1;
-var totalPages = 1;
+(function() {
+  var TOKEN = localStorage.getItem('token') || "";
+  var API = "/dashboard/api";
+  var currentPage = 1;
+  var totalPages = 1;
 
-function showLoading(){ var el = document.getElementById("loading"); if(el) el.classList.add("active"); }
-function hideLoading(){ var el = document.getElementById("loading"); if(el) el.classList.remove("active"); }
+  function showLoading(){ var el = document.getElementById("loading"); if(el) el.classList.add("active"); }
+  function hideLoading(){ var el = document.getElementById("loading"); if(el) el.classList.remove("active"); }
 
-async function api(path, method, body) {
-  showLoading();
-  var h = {"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"};
-  var opts = {method: method || "GET", headers: h};
-  if (body) opts.body = JSON.stringify(body);
-  try {
-    console.log("Dashboard API Call:", path);
-    var r = await fetch(API + path, opts);
-    if (r.status === 401) {
-      console.warn("Unauthorized API call, logging out...");
-      logout();
+  async function api(path, method, body) {
+    showLoading();
+    var h = {"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"};
+    var opts = {method: method || "GET", headers: h};
+    if (body) opts.body = JSON.stringify(body);
+    try {
+      console.log("Dashboard API Call:", path);
+      var r = await fetch(API + path, opts);
+      if (r.status === 401) {
+        console.warn("Unauthorized API call, logging out...");
+        logout();
+        return null;
+      }
+      var d = await r.json();
+      hideLoading();
+      return d;
+    } catch (e) {
+      hideLoading();
+      console.error("API Error at " + path + ":", e);
       return null;
     }
-    var d = await r.json();
-    hideLoading();
-    return d;
-  } catch (e) {
-    hideLoading();
-    console.error("API Error at " + path + ":", e);
-    return null;
-  }
-}
-
-window.logout = function() {
-  console.log("Logging out...");
-  localStorage.removeItem('token');
-  window.location.reload();
-};
-
-window.showDashboard = async function() {
-  // Prevent double execution
-  if (window._dashboardLoaded) {
-    console.log("Dashboard already loaded, skipping...");
-    return;
-  }
-  window._dashboardLoaded = true;
-  console.log("Initializing Dashboard...");
-  if (!TOKEN) {
-    console.log("No token found, staying on login screen.");
-    window._dashboardLoaded = false;
-    return;
   }
 
-  // Show dashboard container immediately
-  var lc = document.getElementById("login-container");
-  var db = document.getElementById("dashboardz");
-  if (lc) lc.style.display = "none";
-  if (db) db.style.display = "block";
+  window.logout = function() {
+    console.log("Logging out...");
+    localStorage.removeItem('token');
+    window.location.reload();
+  };
 
-  try {
-    console.log("Loading Dashboard Sections...");
-    await loadStats();
-    await loadLinks();
-    await loadChannels();
-    await loadConfigs(1);
-    await loadTemplates();
-    await loadSubmissions();
-    await loadSettings();
-    console.log("Dashboard Loaded Successfully.");
-  } catch (e) {
-    console.error("Dashboard Load Error:", e);
-    alert("Error loading dashboard data: " + e.message);
-  }
-};
+  window.showDashboard = async function() {
+    console.log("Initializing Dashboard Logic...");
+    if (!TOKEN) return;
+
+    // Ensure visibility
+    var lc = document.getElementById("login-container");
+    var db = document.getElementById("dashboard");
+    if (lc) lc.style.display = "none";
+    if (db) db.style.display = "block";
+
+    // Load sections independently
+    console.log("Fetching dashboard data...");
+
+    loadStats().catch(function(e) { console.error("Stats load error:", e); });
+    loadLinks().catch(function(e) { console.error("Links load error:", e); });
+    loadChannels().catch(function(e) { console.error("Channels load error:", e); });
+    loadConfigs(1).catch(function(e) { console.error("Configs load error:", e); });
+    loadTemplates().catch(function(e) { console.error("Templates load error:", e); });
+    loadSubmissions().catch(function(e) { console.error("Submissions load error:", e); });
+    loadSettings().catch(function(e) { console.error("Settings load error:", e); });
+  };
 
 async function loadStats() {
   console.log("Loading Stats...");
@@ -1761,9 +1748,11 @@ window.loadConfigs = async function(page) {
   var html = "";
   (d.configs || []).forEach(function(c) {
     var badge = c.test_result && c.test_result.status === "active" ? "badge-active" : (c.test_result && c.test_result.status === "dns_only" ? "badge-dns" : "badge-dead");
-    var votes = c.votes || {likes: [], dislikes: [], score: 0};
+    var likes = c.likes_count || 0;
+    var dislikes = c.dislikes_count || 0;
+    var score = c.vote_score || 0;
     var loc = getFlag(c.test_result ? c.test_result.countryCode : "") + " " + (c.test_result ? c.test_result.country || "Unknown" : "Unknown");
-    html += '<div class="config-card"><div style="display:flex;justify-content:space-between;align-items:center"><div><span class="badge ' + badge + '">' + c.type.toUpperCase() + '</span><span style="font-size:12px">' + loc + '</span></div><span style="color:#888;font-size:12px">' + (c.test_result ? c.test_result.latency || "N/A" : "N/A") + 'ms</span></div><div style="margin:8px 0">' + (c.test_result ? c.test_result.message : "Offline") + ' | Sources: ' + (c.sources ? c.sources.join(", ") : "Unknown") + '</div><div class="voting"><button class="vote-btn" onclick="vote(\'' + c.hash + '\',\'like\')">👍 ' + votes.likes.length + '</button><button class="vote-btn" onclick="vote(\'' + c.hash + '\',\'dislike\')">👎 ' + votes.dislikes.length + '</button><span style="color:#00d4ff">Score: ' + votes.score + '</span></div><code>' + c.config + '</code><div style="margin-top:10px"><button class="btn-danger" onclick="deleteConfig(\'' + c.hash + '\')">🗑️ Delete</button></div></div>';
+    html += '<div class="config-card"><div style="display:flex;justify-content:space-between;align-items:center"><div><span class="badge ' + badge + '">' + c.type.toUpperCase() + '</span><span style="font-size:12px">' + loc + '</span></div><span style="color:#888;font-size:12px">' + (c.test_result ? c.test_result.latency || "N/A" : "N/A") + 'ms</span></div><div style="margin:8px 0">' + (c.test_result ? c.test_result.message : "Offline") + ' | Sources: ' + (c.sources ? c.sources.join(", ") : "Unknown") + '</div><div class="voting"><button class="vote-btn" onclick="vote(\'' + c.hash + '\',\'like\')">👍 ' + likes + '</button><button class="vote-btn" onclick="vote(\'' + c.hash + '\',\'dislike\')">👎 ' + dislikes + '</button><span style="color:#00d4ff">Score: ' + score + '</span></div><code>' + c.config + '</code><div style="margin-top:10px"><button class="btn-danger" onclick="deleteConfig(\'' + c.hash + '\')">🗑️ Delete</button></div></div>';
   });
   document.getElementById("configs-list").innerHTML = html || "<p>No configs yet.</p>";
   renderPagination();
@@ -1867,16 +1856,17 @@ window.showTab = function(name) {
   document.getElementById(name).classList.add("active");
 };
 
-if (TOKEN) {
-  console.log("Token detected, triggering dashboard load...");
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function() { window.showDashboard(); });
+  if (TOKEN) {
+    console.log("Token detected, triggering dashboard load...");
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function() { window.showDashboard(); });
+    } else {
+      window.showDashboard();
+    }
   } else {
-    window.showDashboard();
+    console.log("No token detected, showing login screen.");
   }
-} else {
-  console.log("No token detected, showing login screen.");
-}
+})();
 </script>
 </body></html>`;
 }
@@ -1937,10 +1927,9 @@ async function handleDashboardAPI(env, request, path) {
     const queue = await kvGet(env, "publish_queue", []);
     
     let totalVotes = 0;
-    for (const c of stored) {
-      const votes = await getConfigVotes(env, c.hash);
-      totalVotes += votes.likes.length + votes.dislikes.length;
-    }
+    stored.forEach(c => {
+      totalVotes += (c.likes_count || 0) + (c.dislikes_count || 0);
+    });
     
     return jsonResp({
       total_configs: stored.length,
@@ -1992,11 +1981,6 @@ async function handleDashboardAPI(env, request, path) {
     const page = Math.max(parseInt(url.searchParams.get("page")) || 1, 1);
     
     let stored = await kvGet(env, "stored_configs", []);
-    
-    stored = await Promise.all(stored.map(async c => ({
-      ...c,
-      votes: await getConfigVotes(env, c.hash)
-    })));
     
     switch(sortBy) {
       case "best":
@@ -2175,7 +2159,10 @@ async function handleDashboardAPI(env, request, path) {
         config.failed_tests = 0;
       }
       const votes = await getConfigVotes(env, config.hash);
-      config.quality_score = calculateQualityScore(config, votes);
+      config.likes_count = votes.likes.length;
+      config.dislikes_count = votes.dislikes.length;
+      config.vote_score = votes.score;
+      config.quality_score = calculateQualityScore(config);
       return config;
     });
     
