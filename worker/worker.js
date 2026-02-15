@@ -92,7 +92,9 @@ async function signToken(payload, secret) {
 
 async function verifyToken(token, secret) {
   try {
-    const [header, body, signature] = token.split(".");
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const [header, body, signature] = parts;
     const data = header + "." + body;
 
     const enc = new TextEncoder();
@@ -102,13 +104,22 @@ async function verifyToken(token, secret) {
       false, ["verify"]
     );
 
-    const sigBuf = Uint8Array.from(atob(signature.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
+    // Recovery of base64 padding
+    let sigStr = signature.replace(/-/g, "+").replace(/_/g, "/");
+    while (sigStr.length % 4) sigStr += "=";
+
+    const sigBuf = Uint8Array.from(atob(sigStr), c => c.charCodeAt(0));
     const isValid = await crypto.subtle.verify("HMAC", key, sigBuf, enc.encode(data));
 
     if (isValid) {
-      return JSON.parse(atob(body));
+      // Recovery of body padding
+      let bodyStr = body.replace(/-/g, "+").replace(/_/g, "/");
+      while (bodyStr.length % 4) bodyStr += "=";
+      return JSON.parse(atob(bodyStr));
     }
-  } catch (e) {}
+  } catch (e) {
+    console.error("Token verify error:", e);
+  }
   return null;
 }
 
@@ -1432,12 +1443,17 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 </head>
 <body>
 <div id="app">
-<div id="login-container" class="login-box glass">
+<div id="login-container" class="login-box glass" style="display:block">
 <h1>🌐 VPN Bot Pro Panel</h1>
 <input id="username" placeholder="Username" autocomplete="off">
 <input id="password" type="password" placeholder="Password">
-<button class="btn-primary" id="login-btn">Login</button>
+<button class="btn-primary" onclick="login()">Login</button>
 <p id="login-error" style="color:#f55;margin-top:12px;display:none"></p>
+<script>
+  if (localStorage.getItem('token')) {
+    document.getElementById('login-container').style.display = 'none';
+  }
+</script>
 </div>
 <div id="dashboard" style="display:none">
 <div class="header glass">
@@ -1524,13 +1540,17 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 
 <!-- Script 1: Basic Login Logic -->
 <script>
-window.login = async function() {
+async function login() {
   var u = document.getElementById('username').value;
   var p = document.getElementById('password').value;
   var err = document.getElementById('login-error');
   var ld = document.getElementById('loading');
+
+  if (!err || !ld) return;
+
   err.style.display = 'none';
   ld.style.display = 'block';
+
   try {
     var resp = await fetch('/dashboard/api/login', {
       method: 'POST',
@@ -1539,9 +1559,10 @@ window.login = async function() {
     });
     var data = await resp.json();
     ld.style.display = 'none';
+
     if (resp.ok && data.token) {
       localStorage.setItem('token', data.token);
-      location.reload();
+      window.location.reload();
     } else {
       err.style.display = 'block';
       err.textContent = data.error || 'Invalid credentials';
@@ -1549,10 +1570,10 @@ window.login = async function() {
   } catch (e) {
     ld.style.display = 'none';
     err.style.display = 'block';
-    err.textContent = 'Network error: ' + e.message;
+    err.textContent = 'Connection error: ' + e.message;
   }
-};
-document.getElementById('login-btn').addEventListener('click', window.login);
+}
+window.login = login;
 </script>
 
 <!-- Script 2: Main Dashboard Logic -->
@@ -1764,10 +1785,13 @@ window.showTab = function(name) {
   document.getElementById(name).classList.add("active");
 };
 
-window.onload = function() {
-  if (TOKEN) window.showDashboard();
-};
-
+if (TOKEN) {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', window.showDashboard);
+  } else {
+    window.showDashboard();
+  }
+}
 })();
 </script>
 </body></html>`;
@@ -1811,8 +1835,14 @@ async function handleDashboardAPI(env, request, path) {
   const token = auth.replace("Bearer ", "");
   const userPayload = await verifyToken(token, secret);
 
-  if (!userPayload) return jsonResp({ error: "Invalid or expired token" }, 401);
-  if (userPayload.exp < Date.now()) return jsonResp({ error: "Token expired" }, 401);
+  if (!userPayload) {
+    console.error("Auth Failed: Invalid token signature or format");
+    return jsonResp({ error: "Invalid or expired token" }, 401);
+  }
+  if (userPayload.exp < Date.now()) {
+    console.error("Auth Failed: Token expired at", new Date(userPayload.exp).toISOString());
+    return jsonResp({ error: "Token expired" }, 401);
+  }
 
   // Stats - API موجود قبلی با بهبود
   if (normalizedPath === "/stats") {
