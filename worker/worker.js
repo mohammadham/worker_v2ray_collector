@@ -1531,7 +1531,7 @@ async function loadStats(){
 async function loadLinks(){
   const d=await api("/links");
   document.getElementById("links-list").innerHTML=(d.links||[]).map((l,i)=>
-    '<div class="list-item"><span style="word-break:break-all;font-size:13px">${l}</span><button class="btn-danger" onclick="removeLink('${l}')">Remove</button></div>'
+    \`<div class="list-item"><span style="word-break:break-all;font-size:13px">\${l}</span><button class="btn-danger" onclick="removeLink('\${l}')">Remove</button></div>\`
   ).join("")||"<p>No links configured.</p>";
 }
 async function addLink(){const u=document.getElementById("new-link").value;if(u){await api("/links","POST",{url:u});document.getElementById("new-link").value="";loadLinks();loadStats();}}
@@ -1539,7 +1539,7 @@ async function removeLink(u){await api("/links","DELETE",{url:u});loadLinks();lo
 async function loadChannels(){
   const d=await api("/channels");
   document.getElementById("channels-list").innerHTML=(d.channels||[]).map(c=>
-    '<div class="list-item"><span>${c}</span><button class="btn-danger" onclick="removeChannel('${c}')">Remove</button></div>'
+    \`<div class="list-item"><span>\${c}</span><button class="btn-danger" onclick="removeChannel('\${c}')">Remove</button></div>\`
   ).join("")||"<p>No channels configured.</p>";
 }
 async function addChannel(){const c=document.getElementById("new-channel").value;if(c){await api("/channels","POST",{channel_id:c});document.getElementById("new-channel").value="";loadChannels();loadStats();}}
@@ -1559,7 +1559,7 @@ async function loadConfigs(page=1){
     const badge=c.test_result?.status==="active"?"badge-active":c.test_result?.status==="dns_only"?"badge-dns":"badge-dead";
     const votes=c.votes||{likes:0,dislikes:0,score:0};
     const loc = getFlag(c.test_result?.countryCode) + " " + (c.test_result?.country || "Unknown");
-    return '<div class="config-card"><div style="display:flex;justify-content:space-between;align-items:center"><div><span class="badge ${badge}">${c.type.toUpperCase()}</span><span style="font-size:12px">${loc}</span></div><span style="color:#888;font-size:12px">${c.test_result?.latency||"N/A"}ms</span></div><div style="margin:8px 0">${c.test_result?.message} | Sources: ${c.sources?.join(', ')||'Unknown'}</div><div class="voting"><button class="vote-btn ${votes.userVoted==='like'?'liked':''}" onclick="vote('${c.hash}','like')">👍 ${votes.likes}</button><button class="vote-btn ${votes.userVoted==='dislike'?'disliked':''}" onclick="vote('${c.hash}','dislike')">👎 ${votes.dislikes}</button><span style="color:#00d4ff">Score: ${votes.score}</span></div><code>${c.config}</code><div style="margin-top:10px"><button class="btn-danger" onclick="deleteConfig('${c.hash}')">🗑️ Delete</button></div></div>';
+    return \`<div class="config-card"><div style="display:flex;justify-content:space-between;align-items:center"><div><span class="badge \${badge}">\${c.type.toUpperCase()}</span><span style="font-size:12px">\${loc}</span></div><span style="color:#888;font-size:12px">\${c.test_result?.latency||"N/A"}ms</span></div><div style="margin:8px 0">\${c.test_result?.message} | Sources: \${c.sources?.join(', ')||'Unknown'}</div><div class="voting"><button class="vote-btn \${votes.userVoted==='like'?'liked':''}" onclick="vote('\${c.hash}','like')">👍 \${votes.likes}</button><button class="vote-btn \${votes.userVoted==='dislike'?'disliked':''}" onclick="vote('\${c.hash}','dislike')">👎 \${votes.dislikes}</button><span style="color:#00d4ff">Score: \${votes.score}</span></div><code>\${c.config}</code><div style="margin-top:10px"><button class="btn-danger" onclick="deleteConfig('\${c.hash}')">🗑️ Delete</button></div></div>\`;
   }).join("")||"<p>No configs yet.</p>";
   
   renderPagination();
@@ -1585,7 +1585,7 @@ async function loadTemplates(){
   const active=d.activeTemplate||"default";
   document.getElementById("active-template").value=active;
   document.getElementById("templates-list").innerHTML=Object.entries(t).map(([k,v])=>
-    '<div style="margin-bottom:16px"><label style="color:#00d4ff;font-weight:600">${k}</label><textarea id="tmpl_${k}" style="margin-top:8px;height:80px">${v}</textarea><button class="btn-sm" onclick="saveTemplate('${k}')">Save</button></div>'
+    \`<div style="margin-bottom:16px"><label style="color:#00d4ff;font-weight:600">\${k}</label><textarea id="tmpl_\${k}" style="margin-top:8px;height:80px">\${v}</textarea><button class="btn-sm" onclick="saveTemplate('\${k}')">Save</button></div>\`
   ).join("");
 }
 async function saveTemplate(type){const v=document.getElementById("tmpl_"+type).value;await api("/templates","POST",{type,template:v});alert("Saved!");}
@@ -1599,7 +1599,7 @@ async function loadSubmissions(){
   document.getElementById("submissions-list").innerHTML=(d.submissions||[]).map(s=>{
     const id = s.id || btoa(s.configs?.[0] || "");
     const preview = (s.configs || []).slice(0, 2).join("\n");
-    return '<div class="config-card"><span class="badge badge-pending">Bundle (${s.configs?.length||0})</span> @${s.username}<div style="color:#888;font-size:12px;margin:4px 0">Sources: ${s.sources?.join(', ')||'Unknown'}</div><code>${preview}...</code><div style="margin-top:8px"><button class="btn-success" onclick="approveSub('${id}')">✅ Approve</button> <button class="btn-danger" onclick="rejectSub('${id}')">❌ Reject</button></div></div>';
+    return \`<div class="config-card"><span class="badge badge-pending">Bundle (\${s.configs?.length||0})</span> @\${s.username}<div style="color:#888;font-size:12px;margin:4px 0">Sources: \${s.sources?.join(', ')||'Unknown'}</div><code>\${preview}...</code><div style="margin-top:8px"><button class="btn-success" onclick="approveSub('\${id}')">✅ Approve</button> <button class="btn-danger" onclick="rejectSub('\${id}')">❌ Reject</button></div></div>\`;
   }).join("")||"<p>No pending submissions.</p>";
 }
 async function approveSub(id){await api("/submissions/approve","POST",{id});loadSubmissions();loadStats();}
