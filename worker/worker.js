@@ -1470,11 +1470,11 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 <script>
   if (localStorage.getItem('token')) {
     document.getElementById('login-container').style.display = 'none';
-    document.getElementById('dashboard').style.display = 'block';
+    document.getElementById('dashboardz').style.display = 'block';
   }
 </script>
 </div>
-<div id="dashboard" style="display:none">
+<div id="dashboardz" style="display:none">
 <div class="header glass">
 <h1>🌐 VPN Bot Pro Dashboard</h1>
 <button class="btn-danger" onclick="logout()">Logout</button>
@@ -1643,7 +1643,7 @@ window.showDashboard = async function() {
 
   // Show dashboard container immediately
   var lc = document.getElementById("login-container");
-  var db = document.getElementById("dashboard");
+  var db = document.getElementById("dashboardz");
   if (lc) lc.style.display = "none";
   if (db) db.style.display = "block";
 
