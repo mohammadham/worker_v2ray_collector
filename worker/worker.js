@@ -1403,6 +1403,7 @@ function dashboardHTML(env) {
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>VPN Bot Pro Dashboard</title>
 <style>
+/* استایل‌های قبلی بدون تغییر */
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Segoe UI',Tahoma,sans-serif;background:#0a0a1a;color:#e0e0e0;min-height:100vh;direction:rtl}
 .glass{background:rgba(255,255,255,.05);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.1);border-radius:16px}
@@ -1444,7 +1445,7 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 .vote-btn:hover{background:rgba(0,212,255,.2);border-color:#00d4ff}
 .vote-btn.liked{color:#0f0;border-color:#0f0}
 .vote-btn.disliked{color:#f55;border-color:#f55}
-.settings-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-bottom:20px}
+.settings-grid{display:grid;grid-template-columns:repeat(2,1fr));gap:16px;margin-bottom:20px}
 .settings-item{display:flex;flex-direction:column}
 .settings-item label{color:#00d4ff;margin-bottom:6px;font-size:13px}
 .settings-item input,.settings-item select{background:rgba(0,0,0,.2)}
@@ -1461,22 +1462,20 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 </head>
 <body>
 <div id="app">
-<div id="login-container" class="login-box glass" style="display:block">
+<!-- Login Container -->
+<div id="login-container" class="login-box glass">
 <h1>🌐 VPN Bot Pro Panel</h1>
 <input id="username" placeholder="Username" autocomplete="off">
 <input id="password" type="password" placeholder="Password">
-<button class="btn-primary" onclick="login()">Login</button>
+<button class="btn-primary" onclick="performLogin()">Login</button>
 <p id="login-error" style="color:#f55;margin-top:12px;display:none"></p>
-<script>
-  if (localStorage.getItem('token')) {
-    document.getElementById('login-container').style.display = 'none';
-  }
-</script>
 </div>
-<div id="dashboard" style="display:none">
+
+<!-- Dashboard Container -->
+<div id="dashboard-container" style="display:none">
 <div class="header glass">
 <h1>🌐 VPN Bot Pro Dashboard</h1>
-<button class="btn-danger" onclick="logout()">Logout</button>
+<button class="btn-danger" onclick="performLogout()">Logout</button>
 </div>
 <div class="container">
 <div class="stats-grid" id="stats"></div>
@@ -1554,288 +1553,496 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 </div>
 </div>
 </div>
+</div>
 <div class="loading" id="loading">Processing...</div>
 
-<!-- Script 1: Basic Login Logic -->
+<!-- Unified Script -->
 <script>
-async function login() {
-  var u = document.getElementById('username').value;
-  var p = document.getElementById('password').value;
-  var err = document.getElementById('login-error');
-  var ld = document.getElementById('loading');
+(function() {
+  // Global State
+  var TOKEN = localStorage.getItem('token') || "";
+  var API = "/dashboard/api";
+  var currentPage = 1;
+  var totalPages = 1;
+  var isInitialized = false;
 
-  if (!err || !ld) return;
-
-  err.style.display = 'none';
-  ld.style.display = 'block';
-
-  try {
-    var resp = await fetch('/dashboard/api/login', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({username: u, password: p})
-    });
-    var data = await resp.json();
-    ld.style.display = 'none';
-
-    if (resp.ok && data.token) {
-      localStorage.setItem('token', data.token);
-      window.location.reload();
-    } else {
-      err.style.display = 'block';
-      err.textContent = data.error || 'Invalid credentials';
-    }
-  } catch (e) {
-    ld.style.display = 'none';
-    err.style.display = 'block';
-    err.textContent = 'Connection error: ' + e.message;
+  // Helper Functions
+  function showLoading() {
+    var el = document.getElementById("loading");
+    if (el) el.classList.add("active");
   }
-}
-window.login = login;
-</script>
 
-<!-- Script 2: Main Dashboard Logic -->
-<script>
-var TOKEN = localStorage.getItem('token') || "";
-var API = "/dashboard/api";
-var currentPage = 1;
-var totalPages = 1;
+  function hideLoading() {
+    var el = document.getElementById("loading");
+    if (el) el.classList.remove("active");
+  }
 
-function showLoading(){ var el = document.getElementById("loading"); if(el) el.classList.add("active"); }
-function hideLoading(){ var el = document.getElementById("loading"); if(el) el.classList.remove("active"); }
+  function getEl(id) {
+    return document.getElementById(id);
+  }
 
-async function api(path, method, body) {
-  showLoading();
-  var h = {"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"};
-  var opts = {method: method || "GET", headers: h};
-  if (body) opts.body = JSON.stringify(body);
-  try {
-    console.log("Dashboard API Call:", path);
-    var r = await fetch(API + path, opts);
-    if (r.status === 401) {
-      console.warn("Unauthorized API call, logging out...");
-      logout();
+  // API Function
+  async function api(path, method, body) {
+    showLoading();
+    var h = {"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"};
+    var opts = {method: method || "GET", headers: h};
+    if (body) opts.body = JSON.stringify(body);
+    
+    try {
+      console.log("API Call:", API + path);
+      var r = await fetch(API + path, opts);
+      
+      if (r.status === 401) {
+        console.warn("Unauthorized, logging out...");
+        performLogout();
+        return null;
+      }
+      
+      var d = await r.json();
+      hideLoading();
+      return d;
+    } catch (e) {
+      hideLoading();
+      console.error("API Error at " + path + ":", e);
       return null;
     }
-    var d = await r.json();
-    hideLoading();
-    return d;
-  } catch (e) {
-    hideLoading();
-    console.error("API Error at " + path + ":", e);
-    return null;
-  }
-}
-
-window.logout = function() {
-  console.log("Logging out...");
-  localStorage.removeItem('token');
-  window.location.reload();
-};
-
-window.showDashboard = async function() {
-  console.log("Initializing Dashboard...");
-  if (!TOKEN) {
-    console.log("No token found, staying on login screen.");
-    return;
   }
 
-  // Show dashboard container immediately
-  var lc = document.getElementById("login-container");
-  var db = document.getElementById("dashboard");
-  if (lc) lc.style.display = "none";
-  if (db) db.style.display = "block";
+  // Login Function
+  window.performLogin = async function() {
+    var u = getEl('username').value;
+    var p = getEl('password').value;
+    var err = getEl('login-error');
+    var ld = getEl('loading');
 
-  try {
-    console.log("Loading Dashboard Sections...");
-    await loadStats();
-    await loadLinks();
-    await loadChannels();
-    await loadConfigs(1);
-    await loadTemplates();
-    await loadSubmissions();
-    await loadSettings();
-    console.log("Dashboard Loaded Successfully.");
-  } catch (e) {
-    console.error("Dashboard Load Error:", e);
-    alert("Error loading dashboard data: " + e.message);
-  }
-};
+    if (!u || !p) {
+      err.style.display = 'block';
+      err.textContent = 'Please enter username and password';
+      return;
+    }
 
-async function loadStats() {
-  console.log("Loading Stats...");
-  var d = await api("/stats");
-  if (!d) return;
-  document.getElementById("stats").innerHTML =
-    '<div class="stat-card glass"><div class="num">'+(d.total_configs||0)+'</div><div class="label">Total Configs</div></div>' +
-    '<div class="stat-card glass"><div class="num">'+(d.active_configs||0)+'</div><div class="label">Active</div></div>' +
-    '<div class="stat-card glass"><div class="num">'+(d.source_links||0)+'</div><div class="label">Links</div></div>' +
-    '<div class="stat-card glass"><div class="num">'+(d.channels||0)+'</div><div class="label">Channels</div></div>' +
-    '<div class="stat-card glass"><div class="num">'+(d.pending_submissions||0)+'</div><div class="label">Pending</div></div>' +
-    '<div class="stat-card glass"><div class="num">'+(d.queue_size||0)+'</div><div class="label">Queue</div></div>' +
-    '<div class="stat-card glass"><div class="num">'+(d.total_votes||0)+'</div><div class="label">Total Votes</div></div>';
-}
+    err.style.display = 'none';
+    showLoading();
 
-async function loadLinks() {
-  var d = await api("/links");
-  if (!d) return;
-  var html = "";
-  (d.links || []).forEach(function(l) {
-    html += '<div class="list-item"><span style="word-break:break-all;font-size:13px">' + l + '</span><button class="btn-danger" onclick="removeLink(\'' + l + '\')">Remove</button></div>';
-  });
-  document.getElementById("links-list").innerHTML = html || "<p>No links configured.</p>";
-}
+    try {
+      var resp = await fetch('/dashboard/api/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: u, password: p})
+      });
+      var data = await resp.json();
+      hideLoading();
 
-window.addLink = async function(){var u=document.getElementById("new-link").value; if(u){await api("/links","POST",{url:u}); document.getElementById("new-link").value=""; loadLinks(); loadStats();}};
-window.removeLink = async function(u){await api("/links","DELETE",{url:u}); loadLinks(); loadStats();};
-
-async function loadChannels() {
-  var d = await api("/channels");
-  if (!d) return;
-  var html = "";
-  (d.channels || []).forEach(function(c) {
-    html += '<div class="list-item"><span>' + c + '</span><button class="btn-danger" onclick="removeChannel(\'' + c + '\')">Remove</button></div>';
-  });
-  document.getElementById("channels-list").innerHTML = html || "<p>No channels configured.</p>";
-}
-
-window.addChannel = async function(){var c=document.getElementById("new-channel").value; if(c){await api("/channels","POST",{channel_id:c}); document.getElementById("new-channel").value=""; loadChannels(); loadStats();}};
-window.removeChannel = async function(c){await api("/channels","DELETE",{channel_id:c}); loadChannels(); loadStats();};
-
-function getFlag(code) {
-  if (!code || code === "UN") return "🏳️";
-  return code.toUpperCase().replace(/./g, function(c) { return String.fromCodePoint(c.charCodeAt(0) + 127397); });
-}
-
-window.loadConfigs = async function(page) {
-  currentPage = page || 1;
-  var sortBy = document.getElementById("sort-by").value;
-  var limit = parseInt(document.getElementById("limit-input").value) || 20;
-  var d = await api("/configs?sort=" + sortBy + "&limit=" + limit + "&page=" + currentPage);
-  if (!d) return;
-  totalPages = Math.ceil((d.total || 0) / limit);
-  
-  var html = "";
-  (d.configs || []).forEach(function(c) {
-    var badge = c.test_result && c.test_result.status === "active" ? "badge-active" : (c.test_result && c.test_result.status === "dns_only" ? "badge-dns" : "badge-dead");
-    var votes = c.votes || {likes: [], dislikes: [], score: 0};
-    var loc = getFlag(c.test_result ? c.test_result.countryCode : "") + " " + (c.test_result ? c.test_result.country || "Unknown" : "Unknown");
-    html += '<div class="config-card"><div style="display:flex;justify-content:space-between;align-items:center"><div><span class="badge ' + badge + '">' + c.type.toUpperCase() + '</span><span style="font-size:12px">' + loc + '</span></div><span style="color:#888;font-size:12px">' + (c.test_result ? c.test_result.latency || "N/A" : "N/A") + 'ms</span></div><div style="margin:8px 0">' + (c.test_result ? c.test_result.message : "Offline") + ' | Sources: ' + (c.sources ? c.sources.join(", ") : "Unknown") + '</div><div class="voting"><button class="vote-btn" onclick="vote(\'' + c.hash + '\',\'like\')">👍 ' + votes.likes.length + '</button><button class="vote-btn" onclick="vote(\'' + c.hash + '\',\'dislike\')">👎 ' + votes.dislikes.length + '</button><span style="color:#00d4ff">Score: ' + votes.score + '</span></div><code>' + c.config + '</code><div style="margin-top:10px"><button class="btn-danger" onclick="deleteConfig(\'' + c.hash + '\')">🗑️ Delete</button></div></div>';
-  });
-  document.getElementById("configs-list").innerHTML = html || "<p>No configs yet.</p>";
-  renderPagination();
-};
-
-function renderPagination() {
-  var html = '';
-  for (var i = 1; i <= totalPages; i++) {
-    html += '<button class="page-btn ' + (i === currentPage ? 'active' : '') + '" onclick="loadConfigs(' + i + ')">' + i + '</button>';
-  }
-  document.getElementById("pagination").innerHTML = html;
-}
-
-window.vote = async function(hash, type) { await api("/vote", "POST", {config_hash: hash, vote: type}); loadConfigs(currentPage); };
-window.deleteConfig = async function(hash) { if(confirm("Delete this config?")){ await api("/configs/" + hash, "DELETE"); loadConfigs(currentPage); loadStats(); } };
-
-async function loadTemplates() {
-  var d = await api("/templates");
-  if (!d) return;
-  var t = d.templates || {};
-  document.getElementById("active-template").value = d.activeTemplate || "default";
-  var html = "";
-  Object.keys(t).forEach(function(k) {
-    html += '<div style="margin-bottom:16px"><label style="color:#00d4ff;font-weight:600">' + k + '</label><textarea id="tmpl_' + k + '" style="margin-top:8px;height:80px">' + t[k] + '</textarea><button class="btn-sm" onclick="saveTemplate(\'' + k + '\')">Save</button></div>';
-  });
-  document.getElementById("templates-list").innerHTML = html;
-}
-
-window.saveTemplate = async function(type) { var v = document.getElementById("tmpl_" + type).value; await api("/templates", "POST", {type: type, template: v}); alert("Saved!"); };
-window.resetTemplates = async function() { if(confirm("Reset all templates?")){ await api("/templates/reset", "POST"); loadTemplates(); } };
-window.setActiveTemplate = async function() { var template = document.getElementById("active-template").value; await api("/settings", "POST", {key: "activeTemplate", value: template}); };
-
-async function loadSubmissions() {
-  var d = await api("/submissions");
-  if (!d) return;
-  var html = "";
-  (d.submissions || []).forEach(function(s) {
-    var id = s.id || "unknown";
-    var preview = (s.configs || []).slice(0, 2).join("\n");
-    html += '<div class="config-card"><span class="badge badge-pending">Bundle (' + (s.configs ? s.configs.length : 0) + ')</span> @' + s.username + '<div style="color:#888;font-size:12px;margin:4px 0">Sources: ' + (s.sources ? s.sources.join(", ") : "Unknown") + '</div><code>' + preview + '...</code><div style="margin-top:8px"><button class="btn-success" onclick="approveSub(\'' + id + '\')">✅ Approve</button> <button class="btn-danger" onclick="rejectSub(\'' + id + '\')">❌ Reject</button></div></div>';
-  });
-  document.getElementById("submissions-list").innerHTML = html || "<p>No pending submissions.</p>";
-}
-
-window.approveSub = async function(id) { await api("/submissions/approve", "POST", {id: id}); loadSubmissions(); loadStats(); };
-window.rejectSub = async function(id) { await api("/submissions/reject", "POST", {id: id}); loadSubmissions(); loadStats(); };
-
-async function loadSettings() {
-  var d = await api("/settings");
-  if (!d) return;
-  var s = d.settings || {};
-  document.getElementById("settings-grid").innerHTML =
-    '<div class="settings-item"><label>Max Failed Tests</label><input type="number" id="setting-maxFailedTests" value="'+(s.maxFailedTests||1000)+'"></div>' +
-    '<div class="settings-item"><label>Auto Delete Days</label><input type="number" id="setting-autoDeleteDays" value="'+(s.autoDeleteDays||3)+'"></div>' +
-    '<div class="settings-item"><label>Stale Delete Days</label><input type="number" id="setting-staleDeleteDays" value="'+(s.staleDeleteDays||5)+'"></div>' +
-    '<div class="settings-item"><label>Min Likes to Keep</label><input type="number" id="setting-minLikesToKeep" value="'+(s.minLikesToKeep||1)+'"></div>' +
-    '<div class="settings-item"><label>Rate Limit</label><input type="number" id="setting-rateLimit" value="'+(s.rateLimitPerSecond||30)+'"></div>' +
-    '<div class="settings-item"><label>Queue Interval (min)</label><input type="number" id="setting-queueInterval" value="'+(s.queueIntervalMin||15)+'"></div>' +
-    '<div class="settings-item"><label>Queue Batch Size</label><input type="number" id="setting-queueBatch" value="'+(s.queueBatchSize||1)+'"></div>' +
-    '<div class="settings-item"><label>Enable Queue</label><select id="setting-enableQueue"><option value="false" '+(s.enableQueue?'':'selected')+'>Disabled</option><option value="true" '+(s.enableQueue?'selected':'')+'>Enabled</option></select></div>';
-  document.getElementById("enable-redirect").checked = s.enableRedirect || false;
-  document.getElementById("redirect-url").value = s.redirectUrl || "";
-}
-
-window.saveSettings = async function() {
-  var settings = {
-    maxFailedTests: parseInt(document.getElementById("setting-maxFailedTests").value),
-    autoDeleteDays: parseInt(document.getElementById("setting-autoDeleteDays").value),
-    staleDeleteDays: parseInt(document.getElementById("setting-staleDeleteDays").value),
-    minLikesToKeep: parseInt(document.getElementById("setting-minLikesToKeep").value),
-    rateLimitPerSecond: parseInt(document.getElementById("setting-rateLimit").value),
-    queueIntervalMin: parseInt(document.getElementById("setting-queueInterval").value),
-    queueBatchSize: parseInt(document.getElementById("setting-queueBatch").value),
-    enableQueue: document.getElementById("setting-enableQueue").value === "true"
+      if (resp.ok && data.token) {
+        TOKEN = data.token;
+        localStorage.setItem('token', TOKEN);
+        showDashboard();
+      } else {
+        err.style.display = 'block';
+        err.textContent = data.error || 'Invalid credentials';
+      }
+    } catch (e) {
+      hideLoading();
+      err.style.display = 'block';
+      err.textContent = 'Connection error: ' + e.message;
+    }
   };
-  await api("/settings", "POST", {key: "all", value: settings});
-  alert("Settings saved!");
-};
 
-window.saveRedirectSettings = async function() {
-  var enableRedirect = document.getElementById("enable-redirect").checked;
-  var redirectUrl = document.getElementById("redirect-url").value;
-  await api("/settings", "POST", {key: "enableRedirect", value: enableRedirect});
-  await api("/settings", "POST", {key: "redirectUrl", value: redirectUrl});
-  alert("Redirect settings saved!");
-};
+  // Logout Function
+  window.performLogout = function() {
+    console.log("Logging out...");
+    TOKEN = "";
+    localStorage.removeItem('token');
+    location.reload();
+  };
 
-window.fetchNow = async function() { var d = await api("/fetch-now", "POST"); alert("Done! New: " + (d ? d.new_configs : 0)); loadConfigs(1); loadStats(); };
-window.cleanupNow = async function() { var d = await api("/cleanup", "POST"); alert("Removed: " + (d ? d.removed : 0)); loadConfigs(1); loadStats(); };
-window.retestAll = async function() { var d = await api("/retest-all", "POST"); alert("Retested: " + (d ? d.tested : 0)); loadConfigs(currentPage); };
-window.testCfg = async function() {
-  var c = document.getElementById("test-config-input").value;
-  if (!c) return;
-  var d = await api("/test", "POST", {config: c});
-  if (d) document.getElementById("test-result").innerHTML = 'Result: ' + d.status + ' (' + d.latency + 'ms)';
-};
-
-window.showTab = function(name) {
-  document.querySelectorAll(".section").forEach(function(s){s.classList.remove("active");});
-  document.querySelectorAll(".tab").forEach(function(t){t.classList.remove("active");});
-  document.getElementById(name).classList.add("active");
-};
-
-if (TOKEN) {
-  console.log("Token detected, triggering dashboard load...");
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function() { window.showDashboard(); });
-  } else {
-    window.showDashboard();
+  // Show Dashboard
+  function showDashboard() {
+    console.log("Showing Dashboard...");
+    
+    var loginContainer = getEl("login-container");
+    var dashboardContainer = getEl("dashboard-container");
+    
+    if (loginContainer) loginContainer.style.display = "none";
+    if (dashboardContainer) dashboardContainer.style.display = "block";
+    
+    // Load all data
+    loadAllData();
   }
-} else {
-  console.log("No token detected, showing login screen.");
-}
+
+  // Load All Data
+  async function loadAllData() {
+    try {
+      console.log("Loading dashboard data...");
+      await loadStats();
+      await loadLinks();
+      await loadChannels();
+      await loadConfigs(1);
+      await loadTemplates();
+      await loadSubmissions();
+      await loadSettings();
+      console.log("Dashboard loaded successfully");
+    } catch (e) {
+      console.error("Error loading dashboard:", e);
+      alert("Error loading dashboard: " + e.message);
+    }
+  }
+
+  // Stats
+  async function loadStats() {
+    var d = await api("/stats");
+    if (!d) return;
+    
+    var html = 
+      '<div class="stat-card glass"><div class="num">' + (d.total_configs || 0) + '</div><div class="label">Total Configs</div></div>' +
+      '<div class="stat-card glass"><div class="num">' + (d.active_configs || 0) + '</div><div class="label">Active</div></div>' +
+      '<div class="stat-card glass"><div class="num">' + (d.source_links || 0) + '</div><div class="label">Links</div></div>' +
+      '<div class="stat-card glass"><div class="num">' + (d.channels || 0) + '</div><div class="label">Channels</div></div>' +
+      '<div class="stat-card glass"><div class="num">' + (d.pending_submissions || 0) + '</div><div class="label">Pending</div></div>' +
+      '<div class="stat-card glass"><div class="num">' + (d.queue_size || 0) + '</div><div class="label">Queue</div></div>' +
+      '<div class="stat-card glass"><div class="num">' + (d.total_votes || 0) + '</div><div class="label">Total Votes</div></div>';
+    
+    var statsEl = getEl("stats");
+    if (statsEl) statsEl.innerHTML = html;
+  }
+
+  // Links
+  async function loadLinks() {
+    var d = await api("/links");
+    if (!d) return;
+    
+    var html = "";
+    (d.links || []).forEach(function(l) {
+      html += '<div class="list-item"><span style="word-break:break-all;font-size:13px">' + l + '</span><button class="btn-danger" onclick="removeLink(\'' + l.replace(/'/g, "\\'") + '\')">Remove</button></div>';
+    });
+    
+    var listEl = getEl("links-list");
+    if (listEl) listEl.innerHTML = html || "<p>No links configured.</p>";
+  }
+
+  window.addLink = async function() {
+    var u = getEl("new-link").value;
+    if (u) {
+      await api("/links", "POST", {url: u});
+      getEl("new-link").value = "";
+      loadLinks();
+      loadStats();
+    }
+  };
+
+  window.removeLink = async function(u) {
+    await api("/links", "DELETE", {url: u});
+    loadLinks();
+    loadStats();
+  };
+
+  // Channels
+  async function loadChannels() {
+    var d = await api("/channels");
+    if (!d) return;
+    
+    var html = "";
+    (d.channels || []).forEach(function(c) {
+      html += '<div class="list-item"><span>' + c + '</span><button class="btn-danger" onclick="removeChannel(\'' + c.replace(/'/g, "\\'") + '\')">Remove</button></div>';
+    });
+    
+    var listEl = getEl("channels-list");
+    if (listEl) listEl.innerHTML = html || "<p>No channels configured.</p>";
+  }
+
+  window.addChannel = async function() {
+    var c = getEl("new-channel").value;
+    if (c) {
+      await api("/channels", "POST", {channel_id: c});
+      getEl("new-channel").value = "";
+      loadChannels();
+      loadStats();
+    }
+  };
+
+  window.removeChannel = async function(c) {
+    await api("/channels", "DELETE", {channel_id: c});
+    loadChannels();
+    loadStats();
+  };
+
+  // Configs
+  function getFlag(code) {
+    if (!code || code === "UN") return "🏳️";
+    return code.toUpperCase().replace(/./g, function(c) {
+      return String.fromCodePoint(c.charCodeAt(0) + 127397);
+    });
+  }
+
+  window.loadConfigs = async function(page) {
+    currentPage = page || 1;
+    var sortBy = getEl("sort-by").value;
+    var limit = parseInt(getEl("limit-input").value) || 20;
+    
+    var d = await api("/configs?sort=" + sortBy + "&limit=" + limit + "&page=" + currentPage);
+    if (!d) return;
+    
+    totalPages = Math.ceil((d.total || 0) / limit);
+    
+    var html = "";
+    (d.configs || []).forEach(function(c) {
+      var badge = c.test_result && c.test_result.status === "active" ? "badge-active" : 
+                  (c.test_result && c.test_result.status === "dns_only" ? "badge-dns" : "badge-dead");
+      var votes = c.votes || {likes: [], dislikes: [], score: 0};
+      var loc = getFlag(c.test_result ? c.test_result.countryCode : "") + " " + 
+                (c.test_result ? c.test_result.country || "Unknown" : "Unknown");
+      
+      html += '<div class="config-card">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center">' +
+          '<div><span class="badge ' + badge + '">' + c.type.toUpperCase() + '</span>' +
+          '<span style="font-size:12px">' + loc + '</span></div>' +
+          '<span style="color:#888;font-size:12px">' + (c.test_result ? c.test_result.latency || "N/A" : "N/A") + 'ms</span>' +
+        '</div>' +
+        '<div style="margin:8px 0">' + (c.test_result ? c.test_result.message : "Offline") + 
+        ' | Sources: ' + (c.sources ? c.sources.join(", ") : "Unknown") + '</div>' +
+        '<div class="voting">' +
+          '<button class="vote-btn" onclick="vote(\'' + c.hash + '\',\'like\')">👍 ' + votes.likes.length + '</button>' +
+          '<button class="vote-btn" onclick="vote(\'' + c.hash + '\',\'dislike\')">👎 ' + votes.dislikes.length + '</button>' +
+          '<span style="color:#00d4ff">Score: ' + votes.score + '</span>' +
+        '</div>' +
+        '<code>' + c.config + '</code>' +
+        '<div style="margin-top:10px"><button class="btn-danger" onclick="deleteConfig(\'' + c.hash + '\')">🗑️ Delete</button></div>' +
+      '</div>';
+    });
+    
+    var listEl = getEl("configs-list");
+    if (listEl) listEl.innerHTML = html || "<p>No configs yet.</p>";
+    
+    renderPagination();
+  };
+
+  function renderPagination() {
+    var html = '';
+    for (var i = 1; i <= totalPages; i++) {
+      html += '<button class="page-btn ' + (i === currentPage ? 'active' : '') + 
+              '" onclick="loadConfigs(' + i + ')">' + i + '</button>';
+    }
+    var pagEl = getEl("pagination");
+    if (pagEl) pagEl.innerHTML = html;
+  }
+
+  window.vote = async function(hash, type) {
+    await api("/vote", "POST", {config_hash: hash, vote: type});
+    loadConfigs(currentPage);
+  };
+
+  window.deleteConfig = async function(hash) {
+    if (confirm("Delete this config?")) {
+      await api("/configs/" + hash, "DELETE");
+      loadConfigs(currentPage);
+      loadStats();
+    }
+  };
+
+  // Templates
+  async function loadTemplates() {
+    var d = await api("/templates");
+    if (!d) return;
+    
+    var t = d.templates || {};
+    var activeTemplate = getEl("active-template");
+    if (activeTemplate) activeTemplate.value = d.activeTemplate || "default";
+    
+    var html = "";
+    Object.keys(t).forEach(function(k) {
+      html += '<div style="margin-bottom:16px">' +
+        '<label style="color:#00d4ff;font-weight:600">' + k + '</label>' +
+        '<textarea id="tmpl_' + k + '" style="margin-top:8px;height:80px">' + t[k] + '</textarea>' +
+        '<button class="btn-sm" onclick="saveTemplate(\'' + k + '\')">Save</button>' +
+      '</div>';
+    });
+    
+    var listEl = getEl("templates-list");
+    if (listEl) listEl.innerHTML = html;
+  }
+
+  window.saveTemplate = async function(type) {
+    var v = getEl("tmpl_" + type).value;
+    await api("/templates", "POST", {type: type, template: v});
+    alert("Saved!");
+  };
+
+  window.resetTemplates = async function() {
+    if (confirm("Reset all templates?")) {
+      await api("/templates/reset", "POST");
+      loadTemplates();
+    }
+  };
+
+  window.setActiveTemplate = async function() {
+    var template = getEl("active-template").value;
+    await api("/settings", "POST", {key: "activeTemplate", value: template});
+  };
+
+  // Submissions
+  async function loadSubmissions() {
+    var d = await api("/submissions");
+    if (!d) return;
+    
+    var html = "";
+    (d.submissions || []).forEach(function(s) {
+      var id = s.id || "unknown";
+      var preview = (s.configs || []).slice(0, 2).join("\n");
+      html += '<div class="config-card">' +
+        '<span class="badge badge-pending">Bundle (' + (s.configs ? s.configs.length : 0) + ')</span>' +
+        ' @' + s.username +
+        '<div style="color:#888;font-size:12px;margin:4px 0">Sources: ' + 
+        (s.sources ? s.sources.join(", ") : "Unknown") + '</div>' +
+        '<code>' + preview + '...</code>' +
+        '<div style="margin-top:8px">' +
+          '<button class="btn-success" onclick="approveSub(\'' + id + '\')">✅ Approve</button> ' +
+          '<button class="btn-danger" onclick="rejectSub(\'' + id + '\')">❌ Reject</button>' +
+        '</div>' +
+      '</div>';
+    });
+    
+    var listEl = getEl("submissions-list");
+    if (listEl) listEl.innerHTML = html || "<p>No pending submissions.</p>";
+  }
+
+  window.approveSub = async function(id) {
+    await api("/submissions/approve", "POST", {id: id});
+    loadSubmissions();
+    loadStats();
+  };
+
+  window.rejectSub = async function(id) {
+    await api("/submissions/reject", "POST", {id: id});
+    loadSubmissions();
+    loadStats();
+  };
+
+  // Settings
+  async function loadSettings() {
+    var d = await api("/settings");
+    if (!d) return;
+    
+    var s = d.settings || {};
+    var html = 
+      '<div class="settings-item"><label>Max Failed Tests</label><input type="number" id="setting-maxFailedTests" value="' + (s.maxFailedTests || 1000) + '"></div>' +
+      '<div class="settings-item"><label>Auto Delete Days</label><input type="number" id="setting-autoDeleteDays" value="' + (s.autoDeleteDays || 3) + '"></div>' +
+      '<div class="settings-item"><label>Stale Delete Days</label><input type="number" id="setting-staleDeleteDays" value="' + (s.staleDeleteDays || 5) + '"></div>' +
+      '<div class="settings-item"><label>Min Likes to Keep</label><input type="number" id="setting-minLikesToKeep" value="' + (s.minLikesToKeep || 1) + '"></div>' +
+      '<div class="settings-item"><label>Rate Limit</label><input type="number" id="setting-rateLimit" value="' + (s.rateLimitPerSecond || 30) + '"></div>' +
+      '<div class="settings-item"><label>Queue Interval (min)</label><input type="number" id="setting-queueInterval" value="' + (s.queueIntervalMin || 15) + '"></div>' +
+      '<div class="settings-item"><label>Queue Batch Size</label><input type="number" id="setting-queueBatch" value="' + (s.queueBatchSize || 1) + '"></div>' +
+      '<div class="settings-item"><label>Enable Queue</label><select id="setting-enableQueue">' +
+        '<option value="false" ' + (s.enableQueue ? '' : 'selected') + '>Disabled</option>' +
+        '<option value="true" ' + (s.enableQueue ? 'selected' : '') + '>Enabled</option>' +
+      '</select></div>';
+    
+    var gridEl = getEl("settings-grid");
+    if (gridEl) gridEl.innerHTML = html;
+    
+    var enableRedirect = getEl("enable-redirect");
+    var redirectUrl = getEl("redirect-url");
+    if (enableRedirect) enableRedirect.checked = s.enableRedirect || false;
+    if (redirectUrl) redirectUrl.value = s.redirectUrl || "";
+  }
+
+  window.saveSettings = async function() {
+    var settings = {
+      maxFailedTests: parseInt(getEl("setting-maxFailedTests").value),
+      autoDeleteDays: parseInt(getEl("setting-autoDeleteDays").value),
+      staleDeleteDays: parseInt(getEl("setting-staleDeleteDays").value),
+      minLikesToKeep: parseInt(getEl("setting-minLikesToKeep").value),
+      rateLimitPerSecond: parseInt(getEl("setting-rateLimit").value),
+      queueIntervalMin: parseInt(getEl("setting-queueInterval").value),
+      queueBatchSize: parseInt(getEl("setting-queueBatch").value),
+      enableQueue: getEl("setting-enableQueue").value === "true"
+    };
+    await api("/settings", "POST", {key: "all", value: settings});
+    alert("Settings saved!");
+  };
+
+  window.saveRedirectSettings = async function() {
+    var enableRedirect = getEl("enable-redirect").checked;
+    var redirectUrl = getEl("redirect-url").value;
+    await api("/settings", "POST", {key: "enableRedirect", value: enableRedirect});
+    await api("/settings", "POST", {key: "redirectUrl", value: redirectUrl});
+    alert("Redirect settings saved!");
+  };
+
+  // Actions
+  window.fetchNow = async function() {
+    var d = await api("/fetch-now", "POST");
+    alert("Done! New: " + (d ? d.new_configs : 0));
+    loadConfigs(1);
+    loadStats();
+  };
+
+  window.cleanupNow = async function() {
+    var d = await api("/cleanup", "POST");
+    alert("Removed: " + (d ? d.removed : 0));
+    loadConfigs(1);
+    loadStats();
+  };
+
+  window.retestAll = async function() {
+    var d = await api("/retest-all", "POST");
+    alert("Retested: " + (d ? d.tested : 0));
+    loadConfigs(currentPage);
+  };
+
+  window.testCfg = async function() {
+    var c = getEl("test-config-input").value;
+    if (!c) return;
+    var d = await api("/test", "POST", {config: c});
+    if (d) {
+      getEl("test-result").innerHTML = 'Result: ' + d.status + ' (' + d.latency + 'ms)';
+    }
+  };
+
+  // Tab Navigation
+  window.showTab = function(name) {
+    document.querySelectorAll(".section").forEach(function(s) {
+      s.classList.remove("active");
+    });
+    document.querySelectorAll(".tab").forEach(function(t) {
+      t.classList.remove("active");
+    });
+    
+    var section = getEl(name);
+    if (section) section.classList.add("active");
+    
+    // Find and activate the clicked tab
+    var tabs = document.querySelectorAll(".tab");
+    for (var i = 0; i < tabs.length; i++) {
+      if (tabs[i].textContent.toLowerCase().includes(name)) {
+        tabs[i].classList.add("active");
+        break;
+      }
+    }
+  };
+
+  // Initialization
+  function init() {
+    console.log("Initializing app...");
+    if (TOKEN) {
+      console.log("Token found, showing dashboard");
+      showDashboard();
+    } else {
+      console.log("No token, showing login");
+      var loginContainer = getEl("login-container");
+      if (loginContainer) loginContainer.style.display = "block";
+    }
+  }
+
+  // Start when DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
 </script>
-</body></html>`;
+</body>
+</html>`;
 }
 
 // ======== Dashboard API - COMPLETE VERSION ========
