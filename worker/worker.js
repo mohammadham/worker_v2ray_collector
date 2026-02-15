@@ -1382,7 +1382,7 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 </head>
 <body>
 <div id="app">
-<div id="login" class="login-box glass">
+<div id="login-container" class="login-box glass">
 <h1>🌐 VPN Bot Pro Panel</h1>
 <input id="username" placeholder="Username" autocomplete="off">
 <input id="password" type="password" placeholder="Password">
@@ -1519,7 +1519,7 @@ async function login(){
 function logout(){TOKEN="";localStorage.removeItem("token");location.reload();}
 async function showDashboard(){
   try {
-    document.getElementById("login").style.display="none";
+    document.getElementById("login-container").style.display="none";
     document.getElementById("dashboard").style.display="block";
     showLoading();
     await Promise.all([
