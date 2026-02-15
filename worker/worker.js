@@ -63,6 +63,19 @@ async function kvDelete(env, key) {
 }
 
 // ======== Security Helpers ========
+function utf8ToBase64(str) {
+  try {
+    const bytes = new TextEncoder().encode(str);
+    let binary = "";
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  } catch (e) {
+    return btoa(unescape(encodeURIComponent(str)));
+  }
+}
+
 async function getJwtSecret(env) {
   let secret = await kvGet(env, "auth_secret");
   if (!secret) {
@@ -73,8 +86,8 @@ async function getJwtSecret(env) {
 }
 
 async function signToken(payload, secret) {
-  const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const body = btoa(JSON.stringify(payload));
+  const header = utf8ToBase64(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const body = utf8ToBase64(JSON.stringify(payload)).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
   const data = header + "." + body;
 
   const enc = new TextEncoder();
@@ -93,7 +106,10 @@ async function signToken(payload, secret) {
 async function verifyToken(token, secret) {
   try {
     const parts = token.split(".");
-    if (parts.length !== 3) return null;
+    if (parts.length !== 3) {
+      console.error("Token verify failed: Invalid parts length", parts.length);
+      return null;
+    }
     const [header, body, signature] = parts;
     const data = header + "." + body;
 
@@ -104,7 +120,7 @@ async function verifyToken(token, secret) {
       false, ["verify"]
     );
 
-    // Recovery of base64 padding
+    // Recovery of base64 padding for signature
     let sigStr = signature.replace(/-/g, "+").replace(/_/g, "/");
     while (sigStr.length % 4) sigStr += "=";
 
@@ -115,10 +131,12 @@ async function verifyToken(token, secret) {
       // Recovery of body padding
       let bodyStr = body.replace(/-/g, "+").replace(/_/g, "/");
       while (bodyStr.length % 4) bodyStr += "=";
-      return JSON.parse(atob(bodyStr));
+      return JSON.parse(decodeURIComponent(escape(atob(bodyStr))));
+    } else {
+      console.error("Token verify failed: Invalid signature");
     }
   } catch (e) {
-    console.error("Token verify error:", e);
+    console.error("Token verify exception:", e);
   }
   return null;
 }
@@ -1578,14 +1596,13 @@ window.login = login;
 
 <!-- Script 2: Main Dashboard Logic -->
 <script>
-(function() {
 var TOKEN = localStorage.getItem('token') || "";
 var API = "/dashboard/api";
 var currentPage = 1;
 var totalPages = 1;
 
-function showLoading(){document.getElementById("loading").classList.add("active")}
-function hideLoading(){document.getElementById("loading").classList.remove("active")}
+function showLoading(){ var el = document.getElementById("loading"); if(el) el.classList.add("active"); }
+function hideLoading(){ var el = document.getElementById("loading"); if(el) el.classList.remove("active"); }
 
 async function api(path, method, body) {
   showLoading();
@@ -1593,38 +1610,60 @@ async function api(path, method, body) {
   var opts = {method: method || "GET", headers: h};
   if (body) opts.body = JSON.stringify(body);
   try {
+    console.log("Dashboard API Call:", path);
     var r = await fetch(API + path, opts);
+    if (r.status === 401) {
+      console.warn("Unauthorized API call, logging out...");
+      logout();
+      return null;
+    }
     var d = await r.json();
     hideLoading();
-    if (r.status === 401) { logout(); return null; }
     return d;
   } catch (e) {
     hideLoading();
-    console.error("API Error:", e);
-    throw e;
+    console.error("API Error at " + path + ":", e);
+    return null;
   }
 }
 
 window.logout = function() {
+  console.log("Logging out...");
   localStorage.removeItem('token');
-  location.reload();
+  window.location.reload();
 };
 
 window.showDashboard = async function() {
-  if (!TOKEN) return;
+  console.log("Initializing Dashboard...");
+  if (!TOKEN) {
+    console.log("No token found, staying on login screen.");
+    return;
+  }
+
+  // Show dashboard container immediately
+  var lc = document.getElementById("login-container");
+  var db = document.getElementById("dashboard");
+  if (lc) lc.style.display = "none";
+  if (db) db.style.display = "block";
+
   try {
-    document.getElementById("login-container").style.display = "none";
-    document.getElementById("dashboard").style.display = "block";
-    await Promise.all([
-      loadStats(), loadLinks(), loadChannels(), loadConfigs(1),
-      loadTemplates(), loadSubmissions(), loadSettings()
-    ]);
+    console.log("Loading Dashboard Sections...");
+    await loadStats();
+    await loadLinks();
+    await loadChannels();
+    await loadConfigs(1);
+    await loadTemplates();
+    await loadSubmissions();
+    await loadSettings();
+    console.log("Dashboard Loaded Successfully.");
   } catch (e) {
-    alert("Error loading dashboard: " + e.message);
+    console.error("Dashboard Load Error:", e);
+    alert("Error loading dashboard data: " + e.message);
   }
 };
 
 async function loadStats() {
+  console.log("Loading Stats...");
   var d = await api("/stats");
   if (!d) return;
   document.getElementById("stats").innerHTML =
@@ -1786,13 +1825,15 @@ window.showTab = function(name) {
 };
 
 if (TOKEN) {
+  console.log("Token detected, triggering dashboard load...");
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', window.showDashboard);
+    document.addEventListener('DOMContentLoaded', function() { window.showDashboard(); });
   } else {
     window.showDashboard();
   }
+} else {
+  console.log("No token detected, showing login screen.");
 }
-})();
 </script>
 </body></html>`;
 }
@@ -2209,7 +2250,7 @@ export default {
 
       const active = filtered.slice(0, limit);
       const rawContent = active.map(c => c.config).join("\n");
-      const subContent = btoa(unescape(encodeURIComponent(rawContent)));
+      const subContent = utf8ToBase64(rawContent);
 
       return new Response(subContent, {
         headers: { "Content-Type": "text/plain; charset=utf-8", "Access-Control-Allow-Origin": "*" }
@@ -2253,7 +2294,7 @@ export default {
 
       const configs = subData.configs || [];
       const rawContent = configs.join("\n");
-      const subContent = btoa(unescape(encodeURIComponent(rawContent)));
+      const subContent = utf8ToBase64(rawContent);
       return new Response(subContent, {
         headers: { "Content-Type": "text/plain; charset=utf-8", "Access-Control-Allow-Origin": "*" }
       });
