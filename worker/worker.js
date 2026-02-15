@@ -62,85 +62,6 @@ async function kvDelete(env, key) {
   KV_CACHE.delete(key);
 }
 
-// ======== Security Helpers ========
-function utf8ToBase64(str) {
-  try {
-    const bytes = new TextEncoder().encode(str);
-    let binary = "";
-    for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary);
-  } catch (e) {
-    return btoa(unescape(encodeURIComponent(str)));
-  }
-}
-
-async function getJwtSecret(env) {
-  let secret = await kvGet(env, "auth_secret");
-  if (!secret) {
-    secret = crypto.randomUUID();
-    await kvSet(env, "auth_secret", secret);
-  }
-  return secret;
-}
-
-async function signToken(payload, secret) {
-  const header = utf8ToBase64(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const body = utf8ToBase64(JSON.stringify(payload)).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
-  const data = header + "." + body;
-
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw", enc.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false, ["sign"]
-  );
-  const signature = await crypto.subtle.sign("HMAC", key, enc.encode(data));
-  const sigBase64 = btoa(String.fromCharCode(...new Uint8Array(signature)))
-    .replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
-
-  return data + "." + sigBase64;
-}
-
-async function verifyToken(token, secret) {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) {
-      console.error("Token verify failed: Invalid parts length", parts.length);
-      return null;
-    }
-    const [header, body, signature] = parts;
-    const data = header + "." + body;
-
-    const enc = new TextEncoder();
-    const key = await crypto.subtle.importKey(
-      "raw", enc.encode(secret),
-      { name: "HMAC", hash: "SHA-256" },
-      false, ["verify"]
-    );
-
-    // Recovery of base64 padding for signature
-    let sigStr = signature.replace(/-/g, "+").replace(/_/g, "/");
-    while (sigStr.length % 4) sigStr += "=";
-
-    const sigBuf = Uint8Array.from(atob(sigStr), c => c.charCodeAt(0));
-    const isValid = await crypto.subtle.verify("HMAC", key, sigBuf, enc.encode(data));
-
-    if (isValid) {
-      // Recovery of body padding
-      let bodyStr = body.replace(/-/g, "+").replace(/_/g, "/");
-      while (bodyStr.length % 4) bodyStr += "=";
-      return JSON.parse(decodeURIComponent(escape(atob(bodyStr))));
-    } else {
-      console.error("Token verify failed: Invalid signature");
-    }
-  } catch (e) {
-    console.error("Token verify exception:", e);
-  }
-  return null;
-}
-
 // ======== Rate Limiter for Telegram API ========
 class RateLimiter {
   constructor(maxPerSecond = 30) {
@@ -513,18 +434,7 @@ async function voteConfig(env, configHash, userId, voteType) {
   votes.lastVote = new Date().toISOString();
   
   await kvSet(env, `votes_${configHash}`, votes);
-
-  // Update stored_configs cache for this config
-  const stored = await kvGet(env, "stored_configs", []);
-  const idx = stored.findIndex(c => c.hash === configHash);
-  if (idx !== -1) {
-    stored[idx].likes_count = votes.likes.length;
-    stored[idx].dislikes_count = votes.dislikes.length;
-    stored[idx].vote_score = votes.score;
-    stored[idx].quality_score = calculateQualityScore(stored[idx]);
-    await kvSet(env, "stored_configs", stored);
-  }
-
+  await updateConfigQualityScore(env, configHash);
   return votes;
 }
 
@@ -532,11 +442,11 @@ async function getConfigVotes(env, configHash) {
   return await kvGet(env, `votes_${configHash}`, { likes: [], dislikes: [], score: 0 });
 }
 
-function calculateQualityScore(config) {
+function calculateQualityScore(config, votes) {
   let score = 0;
   // 1. Voting weight (High impact)
-  score += (config.likes_count || 0) * 50;
-  score -= (config.dislikes_count || 0) * 100;
+  score += (votes.likes?.length || 0) * 50;
+  score -= (votes.dislikes?.length || 0) * 100;
 
   // 2. Latency weight
   if (config.test_result?.status === "active" && config.test_result?.latency > 0) {
@@ -609,10 +519,7 @@ async function updateConfigQualityScore(env, configHash) {
   if (idx === -1) return null;
 
   const votes = await getConfigVotes(env, configHash);
-  stored[idx].likes_count = votes.likes.length;
-  stored[idx].dislikes_count = votes.dislikes.length;
-  stored[idx].vote_score = votes.score;
-  stored[idx].quality_score = calculateQualityScore(stored[idx]);
+  stored[idx].quality_score = calculateQualityScore(stored[idx], votes);
 
   await kvSet(env, "stored_configs", stored);
   return stored[idx].quality_score;
@@ -770,10 +677,7 @@ async function manageStorage(env, newCount, configsArray = null) {
     } else {
       stored[i].test_result = testResult;
       const votes = await getConfigVotes(env, stored[i].hash);
-      stored[i].likes_count = votes.likes.length;
-      stored[i].dislikes_count = votes.dislikes.length;
-      stored[i].vote_score = votes.score;
-      stored[i].quality_score = calculateQualityScore(stored[i]);
+      stored[i].quality_score = calculateQualityScore(stored[i], votes);
     }
   }
   if (stored.length <= target) return stored;
@@ -921,12 +825,9 @@ async function checkAndDistribute(env) {
       test_result: testResult, 
       created_at: new Date().toISOString(),
       failed_tests: 0,
-      likes_count: votes.likes.length,
-      dislikes_count: votes.dislikes.length,
-      vote_score: votes.score,
       ...extractServer(item.config)
     };
-    configObj.quality_score = calculateQualityScore(configObj);
+    configObj.quality_score = calculateQualityScore(configObj, votes);
     newConfigsToStore.push(configObj);
 
     if (settings.enableQueue) {
@@ -1392,12 +1293,9 @@ async function handleCallback(env, callback) {
           test_result: testResult,
           created_at: new Date().toISOString(),
           failed_tests: testResult.status === "dead" ? 1 : 0,
-        likes_count: votes.likes.length,
-        dislikes_count: votes.dislikes.length,
-        vote_score: votes.score,
           ...extractServer(cfg)
         };
-      newEntry.quality_score = calculateQualityScore(newEntry);
+        newEntry.quality_score = calculateQualityScore(newEntry, votes);
         currentStored.unshift(newEntry);
       }
 
@@ -1484,18 +1382,12 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 </head>
 <body>
 <div id="app">
-<div id="login-container" class="login-box glass" style="display:block">
+<div id="login-container" class="login-box glass">
 <h1>🌐 VPN Bot Pro Panel</h1>
 <input id="username" placeholder="Username" autocomplete="off">
 <input id="password" type="password" placeholder="Password">
-<button class="btn-primary" onclick="performLogin()">Login</button>
+<button class="btn-primary" onclick="login()">Login</button>
 <p id="login-error" style="color:#f55;margin-top:12px;display:none"></p>
-<script>
-  if (localStorage.getItem('token')) {
-    document.getElementById('login-container').style.display = 'none';
-    document.getElementById('dashboard').style.display = 'block';
-  }
-</script>
 </div>
 <div id="dashboard" style="display:none">
 <div class="header glass">
@@ -1579,294 +1471,228 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 </div>
 </div>
 <div class="loading" id="loading">Processing...</div>
-
-<!-- Global Error Handler -->
 <script>
-window.onerror = function(msg, url, line, col, error) {
-  console.error("Global JS Error:", msg, "at", url, ":", line);
-  alert("Dashboard Error: " + msg + " (See console for details)");
-  return false;
-};
-</script>
-
-<!-- Script 1: Basic Login Logic -->
-<script>
-(function() {
-  window.performLogin = async function() {
-    var u = document.getElementById('username').value;
-    var p = document.getElementById('password').value;
-    var err = document.getElementById('login-error');
-    var ld = document.getElementById('loading');
-
-    if (!err || !ld) return;
-
-    err.style.display = 'none';
-    ld.style.display = 'block';
-
-    try {
-      console.log("Attempting login for:", u);
-      var resp = await fetch('/dashboard/api/login', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({username: u, password: p})
-      });
-      var data = await resp.json();
-      ld.style.display = 'none';
-
-      if (resp.ok && data.token) {
-        console.log("Login successful, saving token and reloading...");
-        localStorage.setItem('token', data.token);
-        setTimeout(function() { window.location.reload(); }, 100);
-      } else {
-        err.style.display = 'block';
-        err.textContent = data.error || 'Invalid credentials';
-      }
-    } catch (e) {
-      if(ld) ld.style.display = 'none';
-      if(err) { err.style.display = 'block'; err.textContent = 'Connection error: ' + e.message; }
-      console.error("Login exception:", e);
-    }
-  };
-})();
-</script>
-
-<!-- Script 2: Main Dashboard Logic -->
-<script>
-(function() {
-  var TOKEN = localStorage.getItem('token') || "";
-  var API = "/dashboard/api";
-  var currentPage = 1;
-  var totalPages = 1;
-
-  function showLoading(){ var el = document.getElementById("loading"); if(el) el.classList.add("active"); }
-  function hideLoading(){ var el = document.getElementById("loading"); if(el) el.classList.remove("active"); }
-
-  async function api(path, method, body) {
-    showLoading();
-    var h = {"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"};
-    var opts = {method: method || "GET", headers: h};
-    if (body) opts.body = JSON.stringify(body);
-    try {
-      console.log("Dashboard API Call:", path);
-      var r = await fetch(API + path, opts);
-      if (r.status === 401) {
-        console.warn("Unauthorized API call, logging out...");
-        logout();
-        return null;
-      }
-      var d = await r.json();
-      hideLoading();
-      return d;
-    } catch (e) {
-      hideLoading();
-      console.error("API Error at " + path + ":", e);
-      return null;
-    }
+let TOKEN="";let currentPage=1;let totalPages=1;const API="/dashboard/api";
+function showLoading(){document.getElementById("loading").classList.add("active")}
+function hideLoading(){document.getElementById("loading").classList.remove("active")}
+async function api(path,method="GET",body=null){
+  showLoading();
+  const h={"Authorization":"Bearer "+TOKEN,"Content-Type":"application/json"};
+  const opts={method,headers:h};
+  if(body)opts.body=JSON.stringify(body);
+  try{
+    const r=await fetch(API+path,opts);
+    const d=await r.json();
+    hideLoading();
+    return d;
+  }catch(e){
+    hideLoading();
+    throw e;
   }
-
-  window.logout = function() {
-    console.log("Logging out...");
-    localStorage.removeItem('token');
-    window.location.reload();
-  };
-
-  window.showDashboard = async function() {
-    console.log("Initializing Dashboard Logic...");
-    if (!TOKEN) return;
-
-    // Ensure visibility
-    var lc = document.getElementById("login-container");
-    var db = document.getElementById("dashboard");
-    if (lc) lc.style.display = "none";
-    if (db) db.style.display = "block";
-
-    // Load sections independently
-    console.log("Fetching dashboard data...");
-
-    loadStats().catch(function(e) { console.error("Stats load error:", e); });
-    loadLinks().catch(function(e) { console.error("Links load error:", e); });
-    loadChannels().catch(function(e) { console.error("Channels load error:", e); });
-    loadConfigs(1).catch(function(e) { console.error("Configs load error:", e); });
-    loadTemplates().catch(function(e) { console.error("Templates load error:", e); });
-    loadSubmissions().catch(function(e) { console.error("Submissions load error:", e); });
-    loadSettings().catch(function(e) { console.error("Settings load error:", e); });
-  };
-
-async function loadStats() {
-  console.log("Loading Stats...");
-  var d = await api("/stats");
-  if (!d) return;
-  document.getElementById("stats").innerHTML =
-    '<div class="stat-card glass"><div class="num">'+(d.total_configs||0)+'</div><div class="label">Total Configs</div></div>' +
-    '<div class="stat-card glass"><div class="num">'+(d.active_configs||0)+'</div><div class="label">Active</div></div>' +
-    '<div class="stat-card glass"><div class="num">'+(d.source_links||0)+'</div><div class="label">Links</div></div>' +
-    '<div class="stat-card glass"><div class="num">'+(d.channels||0)+'</div><div class="label">Channels</div></div>' +
-    '<div class="stat-card glass"><div class="num">'+(d.pending_submissions||0)+'</div><div class="label">Pending</div></div>' +
-    '<div class="stat-card glass"><div class="num">'+(d.queue_size||0)+'</div><div class="label">Queue</div></div>' +
+}
+async function login(){
+  const u=document.getElementById("username").value;
+  const p=document.getElementById("password").value;
+  const err = document.getElementById("login-error");
+  err.style.display="none";
+  showLoading();
+  try{
+    console.log("Attempting login to:", API + "/login");
+    const r=await fetch(API+"/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:p})});
+    const d=await r.json();
+    hideLoading();
+    if(r.ok && d.token){
+      TOKEN=d.token;
+      localStorage.setItem("token",TOKEN);
+      await showDashboard();
+    } else {
+      err.style.display="block";
+      err.textContent=d.error || "Invalid credentials";
+    }
+  }catch(e){
+    hideLoading();
+    err.style.display="block";
+    err.textContent="Login failed: " + e.message;
+    console.error("Login error:", e);
+  }
+}
+function logout(){TOKEN="";localStorage.removeItem("token");location.reload();}
+async function showDashboard(){
+  try {
+    document.getElementById("login-container").style.display="none";
+    document.getElementById("dashboard").style.display="block";
+    showLoading();
+    await Promise.all([
+      loadStats(), loadLinks(), loadChannels(), loadConfigs(),
+      loadTemplates(), loadSubmissions(), loadSettings()
+    ]);
+    hideLoading();
+  } catch (e) {
+    hideLoading();
+    alert("Error loading dashboard: " + e.message);
+    console.error("Dashboard init error:", e);
+  }
+}
+async function loadStats(){
+  const d=await api("/stats");
+  document.getElementById("stats").innerHTML=
+    '<div class="stat-card glass"><div class="num">'+(d.total_configs||0)+'</div><div class="label">Total Configs</div></div>'+
+    '<div class="stat-card glass"><div class="num">'+(d.active_configs||0)+'</div><div class="label">Active</div></div>'+
+    '<div class="stat-card glass"><div class="num">'+(d.source_links||0)+'</div><div class="label">Links</div></div>'+
+    '<div class="stat-card glass"><div class="num">'+(d.channels||0)+'</div><div class="label">Channels</div></div>'+
+    '<div class="stat-card glass"><div class="num">'+(d.pending_submissions||0)+'</div><div class="label">Pending</div></div>'+
+    '<div class="stat-card glass"><div class="num">'+(d.queue_size||0)+'</div><div class="label">Queue</div></div>'+
     '<div class="stat-card glass"><div class="num">'+(d.total_votes||0)+'</div><div class="label">Total Votes</div></div>';
 }
-
-async function loadLinks() {
-  var d = await api("/links");
-  if (!d) return;
-  var html = "";
-  (d.links || []).forEach(function(l) {
-    html += '<div class="list-item"><span style="word-break:break-all;font-size:13px">' + l + '</span><button class="btn-danger" onclick="removeLink(\'' + l + '\')">Remove</button></div>';
-  });
-  document.getElementById("links-list").innerHTML = html || "<p>No links configured.</p>";
+async function loadLinks(){
+  const d=await api("/links");
+  document.getElementById("links-list").innerHTML=(d.links||[]).map((l,i)=>
+    \`<div class="list-item"><span style="word-break:break-all;font-size:13px">\${l}</span><button class="btn-danger" onclick="removeLink('\${l}')">Remove</button></div>\`
+  ).join("")||"<p>No links configured.</p>";
 }
-
-window.addLink = async function(){var u=document.getElementById("new-link").value; if(u){await api("/links","POST",{url:u}); document.getElementById("new-link").value=""; loadLinks(); loadStats();}};
-window.removeLink = async function(u){await api("/links","DELETE",{url:u}); loadLinks(); loadStats();};
-
-async function loadChannels() {
-  var d = await api("/channels");
-  if (!d) return;
-  var html = "";
-  (d.channels || []).forEach(function(c) {
-    html += '<div class="list-item"><span>' + c + '</span><button class="btn-danger" onclick="removeChannel(\'' + c + '\')">Remove</button></div>';
-  });
-  document.getElementById("channels-list").innerHTML = html || "<p>No channels configured.</p>";
+async function addLink(){const u=document.getElementById("new-link").value;if(u){await api("/links","POST",{url:u});document.getElementById("new-link").value="";loadLinks();loadStats();}}
+async function removeLink(u){await api("/links","DELETE",{url:u});loadLinks();loadStats();}
+async function loadChannels(){
+  const d=await api("/channels");
+  document.getElementById("channels-list").innerHTML=(d.channels||[]).map(c=>
+    \`<div class="list-item"><span>\${c}</span><button class="btn-danger" onclick="removeChannel('\${c}')">Remove</button></div>\`
+  ).join("")||"<p>No channels configured.</p>";
 }
-
-window.addChannel = async function(){var c=document.getElementById("new-channel").value; if(c){await api("/channels","POST",{channel_id:c}); document.getElementById("new-channel").value=""; loadChannels(); loadStats();}};
-window.removeChannel = async function(c){await api("/channels","DELETE",{channel_id:c}); loadChannels(); loadStats();};
-
+async function addChannel(){const c=document.getElementById("new-channel").value;if(c){await api("/channels","POST",{channel_id:c});document.getElementById("new-channel").value="";loadChannels();loadStats();}}
+async function removeChannel(c){await api("/channels","DELETE",{channel_id:c});loadChannels();loadStats();}
 function getFlag(code) {
   if (!code || code === "UN") return "🏳️";
-  return code.toUpperCase().replace(/./g, function(c) { return String.fromCodePoint(c.charCodeAt(0) + 127397); });
+  return code.toUpperCase().replace(/./g, c => String.fromCodePoint(c.charCodeAt(0) + 127397));
 }
-
-window.loadConfigs = async function(page) {
-  currentPage = page || 1;
-  var sortBy = document.getElementById("sort-by").value;
-  var limit = parseInt(document.getElementById("limit-input").value) || 20;
-  var d = await api("/configs?sort=" + sortBy + "&limit=" + limit + "&page=" + currentPage);
-  if (!d) return;
-  totalPages = Math.ceil((d.total || 0) / limit);
+async function loadConfigs(page=1){
+  currentPage=page;
+  const sortBy=document.getElementById("sort-by").value;
+  const limit=parseInt(document.getElementById("limit-input").value)||20;
+  const d=await api("/configs?sort="+sortBy+"&limit="+limit+"&page="+page);
+  totalPages=Math.ceil((d.total||0)/limit);
   
-  var html = "";
-  (d.configs || []).forEach(function(c) {
-    var badge = c.test_result && c.test_result.status === "active" ? "badge-active" : (c.test_result && c.test_result.status === "dns_only" ? "badge-dns" : "badge-dead");
-    var likes = c.likes_count || 0;
-    var dislikes = c.dislikes_count || 0;
-    var score = c.vote_score || 0;
-    var loc = getFlag(c.test_result ? c.test_result.countryCode : "") + " " + (c.test_result ? c.test_result.country || "Unknown" : "Unknown");
-    html += '<div class="config-card"><div style="display:flex;justify-content:space-between;align-items:center"><div><span class="badge ' + badge + '">' + c.type.toUpperCase() + '</span><span style="font-size:12px">' + loc + '</span></div><span style="color:#888;font-size:12px">' + (c.test_result ? c.test_result.latency || "N/A" : "N/A") + 'ms</span></div><div style="margin:8px 0">' + (c.test_result ? c.test_result.message : "Offline") + ' | Sources: ' + (c.sources ? c.sources.join(", ") : "Unknown") + '</div><div class="voting"><button class="vote-btn" onclick="vote(\'' + c.hash + '\',\'like\')">👍 ' + likes + '</button><button class="vote-btn" onclick="vote(\'' + c.hash + '\',\'dislike\')">👎 ' + dislikes + '</button><span style="color:#00d4ff">Score: ' + score + '</span></div><code>' + c.config + '</code><div style="margin-top:10px"><button class="btn-danger" onclick="deleteConfig(\'' + c.hash + '\')">🗑️ Delete</button></div></div>';
-  });
-  document.getElementById("configs-list").innerHTML = html || "<p>No configs yet.</p>";
+  document.getElementById("configs-list").innerHTML=(d.configs||[]).map(c=>{
+    const badge=c.test_result?.status==="active"?"badge-active":c.test_result?.status==="dns_only"?"badge-dns":"badge-dead";
+    const votes=c.votes||{likes:0,dislikes:0,score:0};
+    const loc = getFlag(c.test_result?.countryCode) + " " + (c.test_result?.country || "Unknown");
+    return \`<div class="config-card"><div style="display:flex;justify-content:space-between;align-items:center"><div><span class="badge \${badge}">\${c.type.toUpperCase()}</span><span style="font-size:12px">\${loc}</span></div><span style="color:#888;font-size:12px">\${c.test_result?.latency||"N/A"}ms</span></div><div style="margin:8px 0">\${c.test_result?.message} | Sources: \${c.sources?.join(', ')||'Unknown'}</div><div class="voting"><button class="vote-btn \${votes.userVoted==='like'?'liked':''}" onclick="vote('\${c.hash}','like')">👍 \${votes.likes}</button><button class="vote-btn \${votes.userVoted==='dislike'?'disliked':''}" onclick="vote('\${c.hash}','dislike')">👎 \${votes.dislikes}</button><span style="color:#00d4ff">Score: \${votes.score}</span></div><code>\${c.config}</code><div style="margin-top:10px"><button class="btn-danger" onclick="deleteConfig('\${c.hash}')">🗑️ Delete</button></div></div>\`;
+  }).join("")||"<p>No configs yet.</p>";
+  
   renderPagination();
-};
-
-function renderPagination() {
-  var html = '';
-  for (var i = 1; i <= totalPages; i++) {
-    html += '<button class="page-btn ' + (i === currentPage ? 'active' : '') + '" onclick="loadConfigs(' + i + ')">' + i + '</button>';
+}
+function renderPagination(){
+  let html='';
+  for(let i=1;i<=totalPages;i++){
+    html+='<button class="page-btn '+(i===currentPage?'active':'')+'" onclick="loadConfigs('+i+')">'+i+'</button>';
   }
-  document.getElementById("pagination").innerHTML = html;
+  document.getElementById("pagination").innerHTML=html;
 }
-
-window.vote = async function(hash, type) { await api("/vote", "POST", {config_hash: hash, vote: type}); loadConfigs(currentPage); };
-window.deleteConfig = async function(hash) { if(confirm("Delete this config?")){ await api("/configs/" + hash, "DELETE"); loadConfigs(currentPage); loadStats(); } };
-
-async function loadTemplates() {
-  var d = await api("/templates");
-  if (!d) return;
-  var t = d.templates || {};
-  document.getElementById("active-template").value = d.activeTemplate || "default";
-  var html = "";
-  Object.keys(t).forEach(function(k) {
-    html += '<div style="margin-bottom:16px"><label style="color:#00d4ff;font-weight:600">' + k + '</label><textarea id="tmpl_' + k + '" style="margin-top:8px;height:80px">' + t[k] + '</textarea><button class="btn-sm" onclick="saveTemplate(\'' + k + '\')">Save</button></div>';
-  });
-  document.getElementById("templates-list").innerHTML = html;
+async function vote(hash,type){await api("/vote","POST",{config_hash:hash,vote:type});loadConfigs(currentPage);}
+async function deleteConfig(hash){
+  if(confirm("Are you sure you want to delete this config?")){
+    await api("/configs/"+hash,"DELETE");
+    loadConfigs(currentPage);
+    loadStats();
+  }
 }
-
-window.saveTemplate = async function(type) { var v = document.getElementById("tmpl_" + type).value; await api("/templates", "POST", {type: type, template: v}); alert("Saved!"); };
-window.resetTemplates = async function() { if(confirm("Reset all templates?")){ await api("/templates/reset", "POST"); loadTemplates(); } };
-window.setActiveTemplate = async function() { var template = document.getElementById("active-template").value; await api("/settings", "POST", {key: "activeTemplate", value: template}); };
-
-async function loadSubmissions() {
-  var d = await api("/submissions");
-  if (!d) return;
-  var html = "";
-  (d.submissions || []).forEach(function(s) {
-    var id = s.id || "unknown";
-    var preview = (s.configs || []).slice(0, 2).join("\n");
-    html += '<div class="config-card"><span class="badge badge-pending">Bundle (' + (s.configs ? s.configs.length : 0) + ')</span> @' + s.username + '<div style="color:#888;font-size:12px;margin:4px 0">Sources: ' + (s.sources ? s.sources.join(", ") : "Unknown") + '</div><code>' + preview + '...</code><div style="margin-top:8px"><button class="btn-success" onclick="approveSub(\'' + id + '\')">✅ Approve</button> <button class="btn-danger" onclick="rejectSub(\'' + id + '\')">❌ Reject</button></div></div>';
-  });
-  document.getElementById("submissions-list").innerHTML = html || "<p>No pending submissions.</p>";
+async function loadTemplates(){
+  const d=await api("/templates");
+  const t=d.templates||{};
+  const active=d.activeTemplate||"default";
+  document.getElementById("active-template").value=active;
+  document.getElementById("templates-list").innerHTML=Object.entries(t).map(([k,v])=>
+    \`<div style="margin-bottom:16px"><label style="color:#00d4ff;font-weight:600">\${k}</label><textarea id="tmpl_\${k}" style="margin-top:8px;height:80px">\${v}</textarea><button class="btn-sm" onclick="saveTemplate('\${k}')">Save</button></div>\`
+  ).join("");
 }
-
-window.approveSub = async function(id) { await api("/submissions/approve", "POST", {id: id}); loadSubmissions(); loadStats(); };
-window.rejectSub = async function(id) { await api("/submissions/reject", "POST", {id: id}); loadSubmissions(); loadStats(); };
-
-async function loadSettings() {
-  var d = await api("/settings");
-  if (!d) return;
-  var s = d.settings || {};
-  document.getElementById("settings-grid").innerHTML =
-    '<div class="settings-item"><label>Max Failed Tests</label><input type="number" id="setting-maxFailedTests" value="'+(s.maxFailedTests||1000)+'"></div>' +
-    '<div class="settings-item"><label>Auto Delete Days</label><input type="number" id="setting-autoDeleteDays" value="'+(s.autoDeleteDays||3)+'"></div>' +
-    '<div class="settings-item"><label>Stale Delete Days</label><input type="number" id="setting-staleDeleteDays" value="'+(s.staleDeleteDays||5)+'"></div>' +
-    '<div class="settings-item"><label>Min Likes to Keep</label><input type="number" id="setting-minLikesToKeep" value="'+(s.minLikesToKeep||1)+'"></div>' +
-    '<div class="settings-item"><label>Rate Limit</label><input type="number" id="setting-rateLimit" value="'+(s.rateLimitPerSecond||30)+'"></div>' +
-    '<div class="settings-item"><label>Queue Interval (min)</label><input type="number" id="setting-queueInterval" value="'+(s.queueIntervalMin||15)+'"></div>' +
-    '<div class="settings-item"><label>Queue Batch Size</label><input type="number" id="setting-queueBatch" value="'+(s.queueBatchSize||1)+'"></div>' +
+async function saveTemplate(type){const v=document.getElementById("tmpl_"+type).value;await api("/templates","POST",{type,template:v});alert("Saved!");}
+async function resetTemplates(){if(confirm("Are you sure you want to reset all templates to default values?")){await api("/templates/reset","POST");loadTemplates();}}
+async function setActiveTemplate(){
+  const template=document.getElementById("active-template").value;
+  await api("/settings","POST",{key:"activeTemplate",value:template});
+}
+async function loadSubmissions(){
+  const d=await api("/submissions");
+  document.getElementById("submissions-list").innerHTML=(d.submissions||[]).map(s=>{
+    const id = s.id || btoa(s.configs?.[0] || "");
+    const preview = (s.configs || []).slice(0, 2).join("\n");
+    return \`<div class="config-card"><span class="badge badge-pending">Bundle (\${s.configs?.length||0})</span> @\${s.username}<div style="color:#888;font-size:12px;margin:4px 0">Sources: \${s.sources?.join(', ')||'Unknown'}</div><code>\${preview}...</code><div style="margin-top:8px"><button class="btn-success" onclick="approveSub('\${id}')">✅ Approve</button> <button class="btn-danger" onclick="rejectSub('\${id}')">❌ Reject</button></div></div>\`;
+  }).join("")||"<p>No pending submissions.</p>";
+}
+async function approveSub(id){await api("/submissions/approve","POST",{id});loadSubmissions();loadStats();}
+async function rejectSub(id){await api("/submissions/reject","POST",{id});loadSubmissions();loadStats();}
+async function loadSettings(){
+  const d=await api("/settings");
+  const s=d.settings||{};
+  document.getElementById("settings-grid").innerHTML=
+    '<div class="settings-item"><label>Max Failed Tests (before delete)</label><input type="number" id="setting-maxFailedTests" value="'+(s.maxFailedTests||1000)+'"></div>'+
+    '<div class="settings-item"><label>Auto Delete Days (no likes)</label><input type="number" id="setting-autoDeleteDays" value="'+(s.autoDeleteDays||3)+'"></div>'+
+    '<div class="settings-item"><label>Stale Delete Days (no update)</label><input type="number" id="setting-staleDeleteDays" value="'+(s.staleDeleteDays||5)+'"></div>'+
+    '<div class="settings-item"><label>Min Likes to Keep</label><input type="number" id="setting-minLikesToKeep" value="'+(s.minLikesToKeep||1)+'"></div>'+
+    '<div class="settings-item"><label>Rate Limit (msg/s)</label><input type="number" id="setting-rateLimit" value="'+(s.rateLimitPerSecond||30)+'"></div>'+
+    '<div class="settings-item"><label>Queue Interval (min)</label><input type="number" id="setting-queueInterval" value="'+(s.queueIntervalMin||15)+'"></div>'+
+    '<div class="settings-item"><label>Queue Batch Size</label><input type="number" id="setting-queueBatch" value="'+(s.queueBatchSize||1)+'"></div>'+
     '<div class="settings-item"><label>Enable Queue</label><select id="setting-enableQueue"><option value="false" '+(s.enableQueue?'':'selected')+'>Disabled</option><option value="true" '+(s.enableQueue?'selected':'')+'>Enabled</option></select></div>';
-  document.getElementById("enable-redirect").checked = s.enableRedirect || false;
-  document.getElementById("redirect-url").value = s.redirectUrl || "";
+  
+  document.getElementById("enable-redirect").checked=s.enableRedirect||false;
+  document.getElementById("redirect-url").value=s.redirectUrl||"";
 }
-
-window.saveSettings = async function() {
-  var settings = {
-    maxFailedTests: parseInt(document.getElementById("setting-maxFailedTests").value),
-    autoDeleteDays: parseInt(document.getElementById("setting-autoDeleteDays").value),
-    staleDeleteDays: parseInt(document.getElementById("setting-staleDeleteDays").value),
-    minLikesToKeep: parseInt(document.getElementById("setting-minLikesToKeep").value),
-    rateLimitPerSecond: parseInt(document.getElementById("setting-rateLimit").value),
-    queueIntervalMin: parseInt(document.getElementById("setting-queueInterval").value),
-    queueBatchSize: parseInt(document.getElementById("setting-queueBatch").value),
-    enableQueue: document.getElementById("setting-enableQueue").value === "true"
+async function saveSettings(){
+  const settings={
+    maxFailedTests:parseInt(document.getElementById("setting-maxFailedTests").value),
+    autoDeleteDays:parseInt(document.getElementById("setting-autoDeleteDays").value),
+    staleDeleteDays:parseInt(document.getElementById("setting-staleDeleteDays").value),
+    minLikesToKeep:parseInt(document.getElementById("setting-minLikesToKeep").value),
+    rateLimitPerSecond:parseInt(document.getElementById("setting-rateLimit").value),
+    queueIntervalMin:parseInt(document.getElementById("setting-queueInterval").value),
+    queueBatchSize:parseInt(document.getElementById("setting-queueBatch").value),
+    enableQueue:document.getElementById("setting-enableQueue").value === "true"
   };
-  await api("/settings", "POST", {key: "all", value: settings});
+  await api("/settings","POST",{key:"all",value:settings});
   alert("Settings saved!");
-};
-
-window.saveRedirectSettings = async function() {
-  var enableRedirect = document.getElementById("enable-redirect").checked;
-  var redirectUrl = document.getElementById("redirect-url").value;
-  await api("/settings", "POST", {key: "enableRedirect", value: enableRedirect});
-  await api("/settings", "POST", {key: "redirectUrl", value: redirectUrl});
+}
+async function saveRedirectSettings(){
+  const enableRedirect=document.getElementById("enable-redirect").checked;
+  const redirectUrl=document.getElementById("redirect-url").value;
+  await api("/settings","POST",{key:"enableRedirect",value:enableRedirect});
+  await api("/settings","POST",{key:"redirectUrl",value:redirectUrl});
   alert("Redirect settings saved!");
-};
-
-window.fetchNow = async function() { var d = await api("/fetch-now", "POST"); alert("Done! New: " + (d ? d.new_configs : 0)); loadConfigs(1); loadStats(); };
-window.cleanupNow = async function() { var d = await api("/cleanup", "POST"); alert("Removed: " + (d ? d.removed : 0)); loadConfigs(1); loadStats(); };
-window.retestAll = async function() { var d = await api("/retest-all", "POST"); alert("Retested: " + (d ? d.tested : 0)); loadConfigs(currentPage); };
-window.testCfg = async function() {
-  var c = document.getElementById("test-config-input").value;
-  if (!c) return;
-  var d = await api("/test", "POST", {config: c});
-  if (d) document.getElementById("test-result").innerHTML = 'Result: ' + d.status + ' (' + d.latency + 'ms)';
-};
-
-window.showTab = function(name) {
-  document.querySelectorAll(".section").forEach(function(s){s.classList.remove("active");});
-  document.querySelectorAll(".tab").forEach(function(t){t.classList.remove("active");});
+}
+async function fetchNow(){
+  document.getElementById("action-result").innerHTML="<p>Fetching...</p>";
+  const d=await api("/fetch-now","POST");
+  document.getElementById("action-result").innerHTML="<p>✅ New: "+(d.new_configs||0)+"</p>";
+  loadConfigs();loadStats();
+}
+async function cleanupNow(){
+  document.getElementById("action-result").innerHTML="<p>Cleaning up...</p>";
+  const d=await api("/cleanup","POST");
+  document.getElementById("action-result").innerHTML="<p>✅ Removed: "+(d.removed||0)+", Kept: "+(d.kept||0)+"</p>";
+  loadConfigs();loadStats();
+}
+async function retestAll(){
+  document.getElementById("action-result").innerHTML="<p>Retesting all configs...</p>";
+  const d=await api("/retest-all","POST");
+  document.getElementById("action-result").innerHTML="<p>✅ Retested: "+(d.tested||0)+"</p>";
+  loadConfigs();
+}
+async function testCfg(){
+  const c=document.getElementById("test-config-input").value;
+  if(!c)return;
+  document.getElementById("test-result").innerHTML="Testing...";
+  const d=await api("/test","POST",{config:c});
+  const badge=d.status==="active"?"badge-active":d.status==="dns_only"?"badge-dns":"badge-dead";
+  document.getElementById("test-result").innerHTML='<span class="badge '+badge+'">'+d.message+'</span> Latency: '+(d.latency||"N/A")+'ms';
+}
+function showTab(name){
+  document.querySelectorAll(".section").forEach(s=>s.classList.remove("active"));
+  document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
   document.getElementById(name).classList.add("active");
+  event.target.classList.add("active");
+}
+window.onload=function(){
+  const t=localStorage.getItem("token");
+  if(t){TOKEN=t;showDashboard();}
 };
-
-  if (TOKEN) {
-    console.log("Token detected, triggering dashboard load...");
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', function() { window.showDashboard(); });
-    } else {
-      window.showDashboard();
-    }
-  } else {
-    console.log("No token detected, showing login screen.");
-  }
-})();
 </script>
 </body></html>`;
 }
@@ -1875,7 +1701,6 @@ window.showTab = function(name) {
 async function handleDashboardAPI(env, request, path) {
   const url = new URL(request.url);
   const method = request.method;
-  const secret = await getJwtSecret(env);
 
   // Normalize path
   const normalizedPath = path.endsWith("/") ? path.slice(0, -1) : path;
@@ -1895,8 +1720,7 @@ async function handleDashboardAPI(env, request, path) {
     const validPass = env.DASHBOARD_PASS || "";
 
     if (username === validUser && password === validPass) {
-      const payload = { sub: username, exp: Date.now() + 86400000 };
-      const token = await signToken(payload, secret);
+      const token = btoa(JSON.stringify({ sub: username, exp: Date.now() + 86400000, salt: Math.random() }));
       return jsonResp({ token, username });
     }
     return jsonResp({ error: "Invalid username or password" }, 401);
@@ -1905,21 +1729,14 @@ async function handleDashboardAPI(env, request, path) {
   // Auth check
   const auth = request.headers.get("Authorization");
   if (!auth || !auth.startsWith("Bearer ")) return jsonResp({ error: "Unauthorized" }, 401);
-
-  const token = auth.replace("Bearer ", "");
-  const userPayload = await verifyToken(token, secret);
-
-  if (!userPayload) {
-    console.error("Auth Failed: Invalid token signature or format");
-    return jsonResp({ error: "Invalid or expired token" }, 401);
-  }
-  if (userPayload.exp < Date.now()) {
-    console.error("Auth Failed: Token expired at", new Date(userPayload.exp).toISOString());
-    return jsonResp({ error: "Token expired" }, 401);
-  }
+  let userPayload;
+  try {
+    userPayload = JSON.parse(atob(auth.replace("Bearer ", "")));
+    if (userPayload.exp < Date.now()) return jsonResp({ error: "Token expired" }, 401);
+  } catch { return jsonResp({ error: "Invalid token" }, 401); }
 
   // Stats - API موجود قبلی با بهبود
-  if (normalizedPath === "/stats") {
+  if (path === "/stats") {
     const stored = await kvGet(env, "stored_configs", []);
     const links = await kvGet(env, "source_links", []);
     const channels = await kvGet(env, "channel_ids", []);
@@ -1927,9 +1744,10 @@ async function handleDashboardAPI(env, request, path) {
     const queue = await kvGet(env, "publish_queue", []);
     
     let totalVotes = 0;
-    stored.forEach(c => {
-      totalVotes += (c.likes_count || 0) + (c.dislikes_count || 0);
-    });
+    for (const c of stored) {
+      const votes = await getConfigVotes(env, c.hash);
+      totalVotes += votes.likes.length + votes.dislikes.length;
+    }
     
     return jsonResp({
       total_configs: stored.length,
@@ -1943,14 +1761,14 @@ async function handleDashboardAPI(env, request, path) {
   }
 
   // Links - API موجود قبلی حفظ شده
-  if (normalizedPath === "/links" && method === "GET") return jsonResp({ links: await kvGet(env, "source_links", []) });
-  if (normalizedPath === "/links" && method === "POST") {
+  if (path === "/links" && method === "GET") return jsonResp({ links: await kvGet(env, "source_links", []) });
+  if (path === "/links" && method === "POST") {
     const { url: linkUrl } = await request.json();
     const links = await kvGet(env, "source_links", []);
     if (!links.includes(linkUrl)) { links.push(linkUrl); await kvSet(env, "source_links", links); }
     return jsonResp({ links });
   }
-  if (normalizedPath === "/links" && method === "DELETE") {
+  if (path === "/links" && method === "DELETE") {
     const { url: linkUrl } = await request.json();
     let links = await kvGet(env, "source_links", []);
     links = links.filter(l => l !== linkUrl);
@@ -1959,14 +1777,14 @@ async function handleDashboardAPI(env, request, path) {
   }
 
   // Channels - API موجود قبلی حفظ شده
-  if (normalizedPath === "/channels" && method === "GET") return jsonResp({ channels: await kvGet(env, "channel_ids", []) });
-  if (normalizedPath === "/channels" && method === "POST") {
+  if (path === "/channels" && method === "GET") return jsonResp({ channels: await kvGet(env, "channel_ids", []) });
+  if (path === "/channels" && method === "POST") {
     const { channel_id } = await request.json();
     const channels = await kvGet(env, "channel_ids", []);
     if (!channels.includes(channel_id)) { channels.push(channel_id); await kvSet(env, "channel_ids", channels); }
     return jsonResp({ channels });
   }
-  if (normalizedPath === "/channels" && method === "DELETE") {
+  if (path === "/channels" && method === "DELETE") {
     const { channel_id } = await request.json();
     let channels = await kvGet(env, "channel_ids", []);
     channels = channels.filter(c => c !== channel_id);
@@ -1975,12 +1793,17 @@ async function handleDashboardAPI(env, request, path) {
   }
 
   // Configs با Pagination و Sorting - API موجود قبلی با بهبود
-  if (normalizedPath === "/configs" && method === "GET") {
+  if (path === "/configs" && method === "GET") {
     const sortBy = url.searchParams.get("sort") || "newest";
     const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit")) || 20, 10), 100);
     const page = Math.max(parseInt(url.searchParams.get("page")) || 1, 1);
     
     let stored = await kvGet(env, "stored_configs", []);
+    
+    stored = await Promise.all(stored.map(async c => ({
+      ...c,
+      votes: await getConfigVotes(env, c.hash)
+    })));
     
     switch(sortBy) {
       case "best":
@@ -2005,8 +1828,8 @@ async function handleDashboardAPI(env, request, path) {
   }
 
   // Delete Config - API جدید
-  if (normalizedPath.startsWith("/configs/") && method === "DELETE") {
-    const hash = normalizedPath.replace("/configs/", "");
+  if (path.startsWith("/configs/") && method === "DELETE") {
+    const hash = path.replace("/configs/", "");
     let stored = await kvGet(env, "stored_configs", []);
     const config = stored.find(c => c.hash === hash);
     
@@ -2020,7 +1843,7 @@ async function handleDashboardAPI(env, request, path) {
   }
 
   // Voting - API جدید (Handles single or batch)
-  if (normalizedPath === "/vote" && method === "POST") {
+  if (path === "/vote" && method === "POST") {
     const body = await request.json();
     const userId = userPayload.sub;
 
@@ -2041,29 +1864,29 @@ async function handleDashboardAPI(env, request, path) {
   }
 
   // Templates - API موجود قبلی حفظ شده
-  if (normalizedPath === "/templates" && method === "GET") {
+  if (path === "/templates" && method === "GET") {
     const templates = await kvGet(env, "message_templates", DEFAULT_TEMPLATES);
     const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
     return jsonResp({ templates, activeTemplate: settings.activeTemplate });
   }
-  if (normalizedPath === "/templates" && method === "POST") {
+  if (path === "/templates" && method === "POST") {
     const { type, template } = await request.json();
     const templates = await kvGet(env, "message_templates", DEFAULT_TEMPLATES);
     templates[type] = template;
     await kvSet(env, "message_templates", templates);
     return jsonResp({ templates });
   }
-  if (normalizedPath === "/templates/reset" && method === "POST") {
+  if (path === "/templates/reset" && method === "POST") {
     await kvSet(env, "message_templates", DEFAULT_TEMPLATES);
     return jsonResp({ templates: DEFAULT_TEMPLATES });
   }
 
   // Submissions - API موجود قبلی حفظ شده
-  if (normalizedPath === "/submissions" && method === "GET") {
+  if (path === "/submissions" && method === "GET") {
     const subs = await kvGet(env, "submissions", []);
     return jsonResp({ submissions: subs.filter(s => s.status === "pending").slice(0, 50) });
   }
-  if (normalizedPath === "/submissions/approve" && method === "POST") {
+  if (path === "/submissions/approve" && method === "POST") {
     const { id } = await request.json();
     const subs = await kvGet(env, "submissions", []);
     const sub = subs.find(s => s.status === "pending" && (s.id === id || hashConfig(s.configs?.[0] || "") === id));
@@ -2106,7 +1929,7 @@ async function handleDashboardAPI(env, request, path) {
     }
     return jsonResp({ error: "Not found" }, 404);
   }
-  if (normalizedPath === "/submissions/reject" && method === "POST") {
+  if (path === "/submissions/reject" && method === "POST") {
     const { id } = await request.json();
     const subs = await kvGet(env, "submissions", []);
     const sub = subs.find(s => s.status === "pending" && (s.id === id || hashConfig(s.configs?.[0] || "") === id));
@@ -2115,11 +1938,11 @@ async function handleDashboardAPI(env, request, path) {
   }
 
   // Settings - API جدید
-  if (normalizedPath === "/settings" && method === "GET") {
+  if (path === "/settings" && method === "GET") {
     const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
     return jsonResp({ settings });
   }
-  if (normalizedPath === "/settings" && method === "POST") {
+  if (path === "/settings" && method === "POST") {
     const { key, value } = await request.json();
     const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
     
@@ -2134,19 +1957,19 @@ async function handleDashboardAPI(env, request, path) {
   }
 
   // Fetch Now - API موجود قبلی حفظ شده
-  if (normalizedPath === "/fetch-now" && method === "POST") {
+  if (path === "/fetch-now" && method === "POST") {
     const result = await checkAndDistribute(env);
     return jsonResp(result);
   }
 
   // Cleanup - API جدید
-  if (normalizedPath === "/cleanup" && method === "POST") {
+  if (path === "/cleanup" && method === "POST") {
     const result = await cleanupConfigs(env);
     return jsonResp(result);
   }
 
   // Retest All - API جدید
-  if (normalizedPath === "/retest-all" && method === "POST") {
+  if (path === "/retest-all" && method === "POST") {
     const stored = await kvGet(env, "stored_configs", []);
     const limit = 5; // محدودیت همزمانی
     
@@ -2159,10 +1982,7 @@ async function handleDashboardAPI(env, request, path) {
         config.failed_tests = 0;
       }
       const votes = await getConfigVotes(env, config.hash);
-      config.likes_count = votes.likes.length;
-      config.dislikes_count = votes.dislikes.length;
-      config.vote_score = votes.score;
-      config.quality_score = calculateQualityScore(config);
+      config.quality_score = calculateQualityScore(config, votes);
       return config;
     });
     
@@ -2180,7 +2000,7 @@ async function handleDashboardAPI(env, request, path) {
   }
 
   // Test - API موجود قبلی حفظ شده
-  if (normalizedPath === "/test" && method === "POST") {
+  if (path === "/test" && method === "POST") {
     const { config } = await request.json();
     return jsonResp(await testConfig(config));
   }
@@ -2279,8 +2099,7 @@ export default {
       }
 
       const active = filtered.slice(0, limit);
-      const rawContent = active.map(c => c.config).join("\n");
-      const subContent = utf8ToBase64(rawContent);
+      const subContent = btoa(active.map(c => c.config).join("\n"));
 
       return new Response(subContent, {
         headers: { "Content-Type": "text/plain; charset=utf-8", "Access-Control-Allow-Origin": "*" }
@@ -2323,9 +2142,7 @@ export default {
       if (client.usedVol >= client.limitVol) return new Response("Subscription expired (Volume limit)", { status: 403 });
 
       const configs = subData.configs || [];
-      const rawContent = configs.join("\n");
-      const subContent = utf8ToBase64(rawContent);
-      return new Response(subContent, {
+      return new Response(btoa(configs.join("\n")), {
         headers: { "Content-Type": "text/plain; charset=utf-8", "Access-Control-Allow-Origin": "*" }
       });
     }
