@@ -1436,7 +1436,7 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 <h1>🌐 VPN Bot Pro Panel</h1>
 <input id="username" placeholder="Username" autocomplete="off">
 <input id="password" type="password" placeholder="Password">
-<button class="btn-primary" onclick="login()">Login</button>
+<button class="btn-primary" id="login-btn">Login</button>
 <p id="login-error" style="color:#f55;margin-top:12px;display:none"></p>
 </div>
 <div id="dashboard" style="display:none">
@@ -1521,257 +1521,253 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 </div>
 </div>
 <div class="loading" id="loading">Processing...</div>
+
+<!-- Script 1: Basic Login Logic -->
+<script>
+window.login = async function() {
+  var u = document.getElementById('username').value;
+  var p = document.getElementById('password').value;
+  var err = document.getElementById('login-error');
+  var ld = document.getElementById('loading');
+  err.style.display = 'none';
+  ld.style.display = 'block';
+  try {
+    var resp = await fetch('/dashboard/api/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({username: u, password: p})
+    });
+    var data = await resp.json();
+    ld.style.display = 'none';
+    if (resp.ok && data.token) {
+      localStorage.setItem('token', data.token);
+      location.reload();
+    } else {
+      err.style.display = 'block';
+      err.textContent = data.error || 'Invalid credentials';
+    }
+  } catch (e) {
+    ld.style.display = 'none';
+    err.style.display = 'block';
+    err.textContent = 'Network error: ' + e.message;
+  }
+};
+document.getElementById('login-btn').addEventListener('click', window.login);
+</script>
+
+<!-- Script 2: Main Dashboard Logic -->
 <script>
 (function() {
-let TOKEN="";let currentPage=1;let totalPages=1;const API="/dashboard/api";
+var TOKEN = localStorage.getItem('token') || "";
+var API = "/dashboard/api";
+var currentPage = 1;
+var totalPages = 1;
+
 function showLoading(){document.getElementById("loading").classList.add("active")}
 function hideLoading(){document.getElementById("loading").classList.remove("active")}
-async function api(path,method="GET",body=null){
+
+async function api(path, method, body) {
   showLoading();
-  const h={"Authorization":"Bearer "+TOKEN,"Content-Type":"application/json"};
-  const opts={method,headers:h};
-  if(body)opts.body=JSON.stringify(body);
-  try{
-    const r=await fetch(API+path,opts);
-    const d=await r.json();
+  var h = {"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"};
+  var opts = {method: method || "GET", headers: h};
+  if (body) opts.body = JSON.stringify(body);
+  try {
+    var r = await fetch(API + path, opts);
+    var d = await r.json();
     hideLoading();
+    if (r.status === 401) { logout(); return null; }
     return d;
-  }catch(e){
+  } catch (e) {
     hideLoading();
     console.error("API Error:", e);
     throw e;
   }
 }
-window.login = async function(){
-  const u=document.getElementById("username").value;
-  const p=document.getElementById("password").value;
-  const err = document.getElementById("login-error");
-  err.style.display="none";
-  showLoading();
-  try{
-    console.log("Attempting login to:", API + "/login");
-    const r=await fetch(API+"/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:p})});
-    const d=await r.json();
-    hideLoading();
-    if(r.ok && d.token){
-      TOKEN=d.token;
-      localStorage.setItem("token",TOKEN);
-      await showDashboard();
-    } else {
-      err.style.display="block";
-      err.textContent=d.error || "Invalid credentials";
-    }
-  }catch(e){
-    hideLoading();
-    err.style.display="block";
-    err.textContent="Login failed: " + e.message;
-    console.error("Login error:", e);
-  }
+
+window.logout = function() {
+  localStorage.removeItem('token');
+  location.reload();
 };
-window.logout = function(){TOKEN="";localStorage.removeItem("token");location.reload();};
-async function showDashboard(){
+
+window.showDashboard = async function() {
+  if (!TOKEN) return;
   try {
-    document.getElementById("login-container").style.display="none";
-    document.getElementById("dashboard").style.display="block";
-    showLoading();
+    document.getElementById("login-container").style.display = "none";
+    document.getElementById("dashboard").style.display = "block";
     await Promise.all([
-      loadStats(), loadLinks(), loadChannels(), loadConfigs(),
+      loadStats(), loadLinks(), loadChannels(), loadConfigs(1),
       loadTemplates(), loadSubmissions(), loadSettings()
     ]);
-    hideLoading();
   } catch (e) {
-    hideLoading();
     alert("Error loading dashboard: " + e.message);
-    console.error("Dashboard init error:", e);
   }
-}
-async function loadStats(){
-  const d=await api("/stats");
-  document.getElementById("stats").innerHTML=
-    '<div class="stat-card glass"><div class="num">'+(d.total_configs||0)+'</div><div class="label">Total Configs</div></div>'+
-    '<div class="stat-card glass"><div class="num">'+(d.active_configs||0)+'</div><div class="label">Active</div></div>'+
-    '<div class="stat-card glass"><div class="num">'+(d.source_links||0)+'</div><div class="label">Links</div></div>'+
-    '<div class="stat-card glass"><div class="num">'+(d.channels||0)+'</div><div class="label">Channels</div></div>'+
-    '<div class="stat-card glass"><div class="num">'+(d.pending_submissions||0)+'</div><div class="label">Pending</div></div>'+
-    '<div class="stat-card glass"><div class="num">'+(d.queue_size||0)+'</div><div class="label">Queue</div></div>'+
+};
+
+async function loadStats() {
+  var d = await api("/stats");
+  if (!d) return;
+  document.getElementById("stats").innerHTML =
+    '<div class="stat-card glass"><div class="num">'+(d.total_configs||0)+'</div><div class="label">Total Configs</div></div>' +
+    '<div class="stat-card glass"><div class="num">'+(d.active_configs||0)+'</div><div class="label">Active</div></div>' +
+    '<div class="stat-card glass"><div class="num">'+(d.source_links||0)+'</div><div class="label">Links</div></div>' +
+    '<div class="stat-card glass"><div class="num">'+(d.channels||0)+'</div><div class="label">Channels</div></div>' +
+    '<div class="stat-card glass"><div class="num">'+(d.pending_submissions||0)+'</div><div class="label">Pending</div></div>' +
+    '<div class="stat-card glass"><div class="num">'+(d.queue_size||0)+'</div><div class="label">Queue</div></div>' +
     '<div class="stat-card glass"><div class="num">'+(d.total_votes||0)+'</div><div class="label">Total Votes</div></div>';
 }
-async function loadLinks(){
-  const d=await api("/links");
-  let html = "";
-  if (d.links && d.links.length) {
-    d.links.forEach(l => {
-      html += '<div class="list-item"><span style="word-break:break-all;font-size:13px">' + l + '</span><button class="btn-danger" onclick="removeLink(\'' + l + '\')">Remove</button></div>';
-    });
-  } else {
-    html = "<p>No links configured.</p>";
-  }
-  document.getElementById("links-list").innerHTML = html;
+
+async function loadLinks() {
+  var d = await api("/links");
+  if (!d) return;
+  var html = "";
+  (d.links || []).forEach(function(l) {
+    html += '<div class="list-item"><span style="word-break:break-all;font-size:13px">' + l + '</span><button class="btn-danger" onclick="removeLink(\'' + l + '\')">Remove</button></div>';
+  });
+  document.getElementById("links-list").innerHTML = html || "<p>No links configured.</p>";
 }
-window.addLink = async function(){const u=document.getElementById("new-link").value;if(u){await api("/links","POST",{url:u});document.getElementById("new-link").value="";loadLinks();loadStats();}};
-window.removeLink = async function(u){await api("/links","DELETE",{url:u});loadLinks();loadStats();};
-async function loadChannels(){
-  const d=await api("/channels");
-  let html = "";
-  if (d.channels && d.channels.length) {
-    d.channels.forEach(c => {
-      html += '<div class="list-item"><span>' + c + '</span><button class="btn-danger" onclick="removeChannel(\'' + c + '\')">Remove</button></div>';
-    });
-  } else {
-    html = "<p>No channels configured.</p>";
-  }
-  document.getElementById("channels-list").innerHTML = html;
+
+window.addLink = async function(){var u=document.getElementById("new-link").value; if(u){await api("/links","POST",{url:u}); document.getElementById("new-link").value=""; loadLinks(); loadStats();}};
+window.removeLink = async function(u){await api("/links","DELETE",{url:u}); loadLinks(); loadStats();};
+
+async function loadChannels() {
+  var d = await api("/channels");
+  if (!d) return;
+  var html = "";
+  (d.channels || []).forEach(function(c) {
+    html += '<div class="list-item"><span>' + c + '</span><button class="btn-danger" onclick="removeChannel(\'' + c + '\')">Remove</button></div>';
+  });
+  document.getElementById("channels-list").innerHTML = html || "<p>No channels configured.</p>";
 }
-window.addChannel = async function(){const c=document.getElementById("new-channel").value;if(c){await api("/channels","POST",{channel_id:c});document.getElementById("new-channel").value="";loadChannels();loadStats();}};
-window.removeChannel = async function(c){await api("/channels","DELETE",{channel_id:c});loadChannels();loadStats();};
+
+window.addChannel = async function(){var c=document.getElementById("new-channel").value; if(c){await api("/channels","POST",{channel_id:c}); document.getElementById("new-channel").value=""; loadChannels(); loadStats();}};
+window.removeChannel = async function(c){await api("/channels","DELETE",{channel_id:c}); loadChannels(); loadStats();};
+
 function getFlag(code) {
   if (!code || code === "UN") return "🏳️";
   return code.toUpperCase().replace(/./g, function(c) { return String.fromCodePoint(c.charCodeAt(0) + 127397); });
 }
-window.loadConfigs = async function(page){
-  if (!page) page = 1;
-  currentPage=page;
-  const sortBy=document.getElementById("sort-by").value;
-  const limit=parseInt(document.getElementById("limit-input").value)||20;
-  const d=await api("/configs?sort="+sortBy+"&limit="+limit+"&page="+page);
-  totalPages=Math.ceil((d.total||0)/limit);
-  
-  let html = "";
-  if (d.configs && d.configs.length) {
-    d.configs.forEach(c => {
-      const badge = c.test_result && c.test_result.status === "active" ? "badge-active" : (c.test_result && c.test_result.status === "dns_only" ? "badge-dns" : "badge-dead");
-      const votes = c.votes || {likes:0, dislikes:0, score:0};
-      const loc = getFlag(c.test_result ? c.test_result.countryCode : "") + " " + (c.test_result ? c.test_result.country || "Unknown" : "Unknown");
 
-      html += '<div class="config-card"><div style="display:flex;justify-content:space-between;align-items:center"><div><span class="badge ' + badge + '">' + c.type.toUpperCase() + '</span><span style="font-size:12px">' + loc + '</span></div><span style="color:#888;font-size:12px">' + (c.test_result ? c.test_result.latency || "N/A" : "N/A") + 'ms</span></div><div style="margin:8px 0">' + (c.test_result ? c.test_result.message : "N/A") + " | Sources: " + (c.sources ? c.sources.join(", ") : "Unknown") + '</div><div class="voting"><button class="vote-btn ' + (votes.userVoted === "like" ? "liked" : "") + '" onclick="vote(\'' + c.hash + '\',\'like\')">👍 ' + (votes.likes ? votes.likes.length : 0) + '</button><button class="vote-btn ' + (votes.userVoted === "dislike" ? "disliked" : "") + '" onclick="vote(\'' + c.hash + '\',\'dislike\')">👎 ' + (votes.dislikes ? votes.dislikes.length : 0) + '</button><span style="color:#00d4ff">Score: ' + (votes.score || 0) + '</span></div><code>' + c.config + '</code><div style="margin-top:10px"><button class="btn-danger" onclick="deleteConfig(\'' + c.hash + '\')">🗑️ Delete</button></div></div>';
-    });
-  } else {
-    html = "<p>No configs yet.</p>";
-  }
-  document.getElementById("configs-list").innerHTML = html;
+window.loadConfigs = async function(page) {
+  currentPage = page || 1;
+  var sortBy = document.getElementById("sort-by").value;
+  var limit = parseInt(document.getElementById("limit-input").value) || 20;
+  var d = await api("/configs?sort=" + sortBy + "&limit=" + limit + "&page=" + currentPage);
+  if (!d) return;
+  totalPages = Math.ceil((d.total || 0) / limit);
+  
+  var html = "";
+  (d.configs || []).forEach(function(c) {
+    var badge = c.test_result && c.test_result.status === "active" ? "badge-active" : (c.test_result && c.test_result.status === "dns_only" ? "badge-dns" : "badge-dead");
+    var votes = c.votes || {likes: [], dislikes: [], score: 0};
+    var loc = getFlag(c.test_result ? c.test_result.countryCode : "") + " " + (c.test_result ? c.test_result.country || "Unknown" : "Unknown");
+    html += '<div class="config-card"><div style="display:flex;justify-content:space-between;align-items:center"><div><span class="badge ' + badge + '">' + c.type.toUpperCase() + '</span><span style="font-size:12px">' + loc + '</span></div><span style="color:#888;font-size:12px">' + (c.test_result ? c.test_result.latency || "N/A" : "N/A") + 'ms</span></div><div style="margin:8px 0">' + (c.test_result ? c.test_result.message : "Offline") + ' | Sources: ' + (c.sources ? c.sources.join(", ") : "Unknown") + '</div><div class="voting"><button class="vote-btn" onclick="vote(\'' + c.hash + '\',\'like\')">👍 ' + votes.likes.length + '</button><button class="vote-btn" onclick="vote(\'' + c.hash + '\',\'dislike\')">👎 ' + votes.dislikes.length + '</button><span style="color:#00d4ff">Score: ' + votes.score + '</span></div><code>' + c.config + '</code><div style="margin-top:10px"><button class="btn-danger" onclick="deleteConfig(\'' + c.hash + '\')">🗑️ Delete</button></div></div>';
+  });
+  document.getElementById("configs-list").innerHTML = html || "<p>No configs yet.</p>";
   renderPagination();
 };
-function renderPagination(){
-  let html='';
-  for(let i=1;i<=totalPages;i++){
-    html+='<button class="page-btn ' + (i===currentPage?'active':'') + '" onclick="loadConfigs(' + i + ')">' + i + '</button>';
+
+function renderPagination() {
+  var html = '';
+  for (var i = 1; i <= totalPages; i++) {
+    html += '<button class="page-btn ' + (i === currentPage ? 'active' : '') + '" onclick="loadConfigs(' + i + ')">' + i + '</button>';
   }
-  document.getElementById("pagination").innerHTML=html;
+  document.getElementById("pagination").innerHTML = html;
 }
-window.vote = async function(hash,type){await api("/vote","POST",{config_hash:hash,vote:type});loadConfigs(currentPage);};
-window.deleteConfig = async function(hash){
-  if(confirm("Are you sure you want to delete this config?")){
-    await api("/configs/"+hash,"DELETE");
-    loadConfigs(currentPage);
-    loadStats();
-  }
-};
-async function loadTemplates(){
-  const d=await api("/templates");
-  const t=d.templates||{};
-  const active=d.activeTemplate||"default";
-  document.getElementById("active-template").value=active;
-  let html = "";
-  Object.keys(t).forEach(k => {
+
+window.vote = async function(hash, type) { await api("/vote", "POST", {config_hash: hash, vote: type}); loadConfigs(currentPage); };
+window.deleteConfig = async function(hash) { if(confirm("Delete this config?")){ await api("/configs/" + hash, "DELETE"); loadConfigs(currentPage); loadStats(); } };
+
+async function loadTemplates() {
+  var d = await api("/templates");
+  if (!d) return;
+  var t = d.templates || {};
+  document.getElementById("active-template").value = d.activeTemplate || "default";
+  var html = "";
+  Object.keys(t).forEach(function(k) {
     html += '<div style="margin-bottom:16px"><label style="color:#00d4ff;font-weight:600">' + k + '</label><textarea id="tmpl_' + k + '" style="margin-top:8px;height:80px">' + t[k] + '</textarea><button class="btn-sm" onclick="saveTemplate(\'' + k + '\')">Save</button></div>';
   });
   document.getElementById("templates-list").innerHTML = html;
 }
-window.saveTemplate = async function(type){const v=document.getElementById("tmpl_"+type).value;await api("/templates","POST",{type,template:v});alert("Saved!");};
-window.resetTemplates = async function(){if(confirm("Are you sure you want to reset all templates to default values?")){await api("/templates/reset","POST");loadTemplates();}};
-window.setActiveTemplate = async function(){
-  const template=document.getElementById("active-template").value;
-  await api("/settings","POST",{key:"activeTemplate",value:template});
-};
-async function loadSubmissions(){
-  const d=await api("/submissions");
-  let html = "";
-  if (d.submissions && d.submissions.length) {
-    d.submissions.forEach(s => {
-      const id = s.id || btoa(s.configs && s.configs[0] || "");
-      const preview = (s.configs || []).slice(0, 2).join("\n");
-      html += '<div class="config-card"><span class="badge badge-pending">Bundle (' + (s.configs ? s.configs.length : 0) + ')</span> @' + s.username + '<div style="color:#888;font-size:12px;margin:4px 0">Sources: ' + (s.sources ? s.sources.join(", ") : "Unknown") + '</div><code>' + preview + '...</code><div style="margin-top:8px"><button class="btn-success" onclick="approveSub(\'' + id + '\')">✅ Approve</button> <button class="btn-danger" onclick="rejectSub(\'' + id + '\')">❌ Reject</button></div></div>';
-    });
-  } else {
-    html = "<p>No pending submissions.</p>";
-  }
-  document.getElementById("submissions-list").innerHTML = html;
+
+window.saveTemplate = async function(type) { var v = document.getElementById("tmpl_" + type).value; await api("/templates", "POST", {type: type, template: v}); alert("Saved!"); };
+window.resetTemplates = async function() { if(confirm("Reset all templates?")){ await api("/templates/reset", "POST"); loadTemplates(); } };
+window.setActiveTemplate = async function() { var template = document.getElementById("active-template").value; await api("/settings", "POST", {key: "activeTemplate", value: template}); };
+
+async function loadSubmissions() {
+  var d = await api("/submissions");
+  if (!d) return;
+  var html = "";
+  (d.submissions || []).forEach(function(s) {
+    var id = s.id || "unknown";
+    var preview = (s.configs || []).slice(0, 2).join("\n");
+    html += '<div class="config-card"><span class="badge badge-pending">Bundle (' + (s.configs ? s.configs.length : 0) + ')</span> @' + s.username + '<div style="color:#888;font-size:12px;margin:4px 0">Sources: ' + (s.sources ? s.sources.join(", ") : "Unknown") + '</div><code>' + preview + '...</code><div style="margin-top:8px"><button class="btn-success" onclick="approveSub(\'' + id + '\')">✅ Approve</button> <button class="btn-danger" onclick="rejectSub(\'' + id + '\')">❌ Reject</button></div></div>';
+  });
+  document.getElementById("submissions-list").innerHTML = html || "<p>No pending submissions.</p>";
 }
-window.approveSub = async function(id){await api("/submissions/approve","POST",{id});loadSubmissions();loadStats();};
-window.rejectSub = async function(id){await api("/submissions/reject","POST",{id});loadSubmissions();loadStats();};
-async function loadSettings(){
-  const d=await api("/settings");
-  const s=d.settings||{};
-  document.getElementById("settings-grid").innerHTML=
-    '<div class="settings-item"><label>Max Failed Tests (before delete)</label><input type="number" id="setting-maxFailedTests" value="'+(s.maxFailedTests||1000)+'"></div>'+
-    '<div class="settings-item"><label>Auto Delete Days (no likes)</label><input type="number" id="setting-autoDeleteDays" value="'+(s.autoDeleteDays||3)+'"></div>'+
-    '<div class="settings-item"><label>Stale Delete Days (no update)</label><input type="number" id="setting-staleDeleteDays" value="'+(s.staleDeleteDays||5)+'"></div>'+
-    '<div class="settings-item"><label>Min Likes to Keep</label><input type="number" id="setting-minLikesToKeep" value="'+(s.minLikesToKeep||1)+'"></div>'+
-    '<div class="settings-item"><label>Rate Limit (msg/s)</label><input type="number" id="setting-rateLimit" value="'+(s.rateLimitPerSecond||30)+'"></div>'+
-    '<div class="settings-item"><label>Queue Interval (min)</label><input type="number" id="setting-queueInterval" value="'+(s.queueIntervalMin||15)+'"></div>'+
-    '<div class="settings-item"><label>Queue Batch Size</label><input type="number" id="setting-queueBatch" value="'+(s.queueBatchSize||1)+'"></div>'+
+
+window.approveSub = async function(id) { await api("/submissions/approve", "POST", {id: id}); loadSubmissions(); loadStats(); };
+window.rejectSub = async function(id) { await api("/submissions/reject", "POST", {id: id}); loadSubmissions(); loadStats(); };
+
+async function loadSettings() {
+  var d = await api("/settings");
+  if (!d) return;
+  var s = d.settings || {};
+  document.getElementById("settings-grid").innerHTML =
+    '<div class="settings-item"><label>Max Failed Tests</label><input type="number" id="setting-maxFailedTests" value="'+(s.maxFailedTests||1000)+'"></div>' +
+    '<div class="settings-item"><label>Auto Delete Days</label><input type="number" id="setting-autoDeleteDays" value="'+(s.autoDeleteDays||3)+'"></div>' +
+    '<div class="settings-item"><label>Stale Delete Days</label><input type="number" id="setting-staleDeleteDays" value="'+(s.staleDeleteDays||5)+'"></div>' +
+    '<div class="settings-item"><label>Min Likes to Keep</label><input type="number" id="setting-minLikesToKeep" value="'+(s.minLikesToKeep||1)+'"></div>' +
+    '<div class="settings-item"><label>Rate Limit</label><input type="number" id="setting-rateLimit" value="'+(s.rateLimitPerSecond||30)+'"></div>' +
+    '<div class="settings-item"><label>Queue Interval (min)</label><input type="number" id="setting-queueInterval" value="'+(s.queueIntervalMin||15)+'"></div>' +
+    '<div class="settings-item"><label>Queue Batch Size</label><input type="number" id="setting-queueBatch" value="'+(s.queueBatchSize||1)+'"></div>' +
     '<div class="settings-item"><label>Enable Queue</label><select id="setting-enableQueue"><option value="false" '+(s.enableQueue?'':'selected')+'>Disabled</option><option value="true" '+(s.enableQueue?'selected':'')+'>Enabled</option></select></div>';
-  
-  document.getElementById("enable-redirect").checked=s.enableRedirect||false;
-  document.getElementById("redirect-url").value=s.redirectUrl||"";
+  document.getElementById("enable-redirect").checked = s.enableRedirect || false;
+  document.getElementById("redirect-url").value = s.redirectUrl || "";
 }
-window.saveSettings = async function(){
-  const settings={
-    maxFailedTests:parseInt(document.getElementById("setting-maxFailedTests").value),
-    autoDeleteDays:parseInt(document.getElementById("setting-autoDeleteDays").value),
-    staleDeleteDays:parseInt(document.getElementById("setting-staleDeleteDays").value),
-    minLikesToKeep:parseInt(document.getElementById("setting-minLikesToKeep").value),
-    rateLimitPerSecond:parseInt(document.getElementById("setting-rateLimit").value),
-    queueIntervalMin:parseInt(document.getElementById("setting-queueInterval").value),
-    queueBatchSize:parseInt(document.getElementById("setting-queueBatch").value),
-    enableQueue:document.getElementById("setting-enableQueue").value === "true"
+
+window.saveSettings = async function() {
+  var settings = {
+    maxFailedTests: parseInt(document.getElementById("setting-maxFailedTests").value),
+    autoDeleteDays: parseInt(document.getElementById("setting-autoDeleteDays").value),
+    staleDeleteDays: parseInt(document.getElementById("setting-staleDeleteDays").value),
+    minLikesToKeep: parseInt(document.getElementById("setting-minLikesToKeep").value),
+    rateLimitPerSecond: parseInt(document.getElementById("setting-rateLimit").value),
+    queueIntervalMin: parseInt(document.getElementById("setting-queueInterval").value),
+    queueBatchSize: parseInt(document.getElementById("setting-queueBatch").value),
+    enableQueue: document.getElementById("setting-enableQueue").value === "true"
   };
-  await api("/settings","POST",{key:"all",value:settings});
+  await api("/settings", "POST", {key: "all", value: settings});
   alert("Settings saved!");
 };
-window.saveRedirectSettings = async function(){
-  const enableRedirect=document.getElementById("enable-redirect").checked;
-  const redirectUrl=document.getElementById("redirect-url").value;
-  await api("/settings","POST",{key:"enableRedirect",value:enableRedirect});
-  await api("/settings","POST",{key:"redirectUrl",value:redirectUrl});
+
+window.saveRedirectSettings = async function() {
+  var enableRedirect = document.getElementById("enable-redirect").checked;
+  var redirectUrl = document.getElementById("redirect-url").value;
+  await api("/settings", "POST", {key: "enableRedirect", value: enableRedirect});
+  await api("/settings", "POST", {key: "redirectUrl", value: redirectUrl});
   alert("Redirect settings saved!");
 };
-window.fetchNow = async function(){
-  document.getElementById("action-result").innerHTML="<p>Fetching...</p>";
-  const d=await api("/fetch-now","POST");
-  document.getElementById("action-result").innerHTML="<p>✅ New: "+(d.new_configs||0)+"</p>";
-  loadConfigs();loadStats();
+
+window.fetchNow = async function() { var d = await api("/fetch-now", "POST"); alert("Done! New: " + (d ? d.new_configs : 0)); loadConfigs(1); loadStats(); };
+window.cleanupNow = async function() { var d = await api("/cleanup", "POST"); alert("Removed: " + (d ? d.removed : 0)); loadConfigs(1); loadStats(); };
+window.retestAll = async function() { var d = await api("/retest-all", "POST"); alert("Retested: " + (d ? d.tested : 0)); loadConfigs(currentPage); };
+window.testCfg = async function() {
+  var c = document.getElementById("test-config-input").value;
+  if (!c) return;
+  var d = await api("/test", "POST", {config: c});
+  if (d) document.getElementById("test-result").innerHTML = 'Result: ' + d.status + ' (' + d.latency + 'ms)';
 };
-window.cleanupNow = async function(){
-  document.getElementById("action-result").innerHTML="<p>Cleaning up...</p>";
-  const d=await api("/cleanup","POST");
-  document.getElementById("action-result").innerHTML="<p>✅ Removed: "+(d.removed||0)+", Kept: "+(d.kept||0)+"</p>";
-  loadConfigs();loadStats();
-};
-window.retestAll = async function(){
-  document.getElementById("action-result").innerHTML="<p>Retesting all configs...</p>";
-  const d=await api("/retest-all","POST");
-  document.getElementById("action-result").innerHTML="<p>✅ Retested: "+(d.tested||0)+"</p>";
-  loadConfigs();
-};
-window.testCfg = async function(){
-  const c=document.getElementById("test-config-input").value;
-  if(!c)return;
-  document.getElementById("test-result").innerHTML="Testing...";
-  const d=await api("/test","POST",{config:c});
-  const badge=d.status==="active"?"badge-active":d.status==="dns_only"?"badge-dns":"badge-dead";
-  document.getElementById("test-result").innerHTML='<span class="badge '+badge+'">'+d.message+'</span> Latency: '+(d.latency||"N/A")+'ms';
-};
-window.showTab = function(name){
+
+window.showTab = function(name) {
   document.querySelectorAll(".section").forEach(function(s){s.classList.remove("active");});
   document.querySelectorAll(".tab").forEach(function(t){t.classList.remove("active");});
   document.getElementById(name).classList.add("active");
-  if (event && event.target) event.target.classList.add("active");
 };
-window.onload=function(){
-  const t=localStorage.getItem("token");
-  if(t){TOKEN=t;showDashboard();}
+
+window.onload = function() {
+  if (TOKEN) window.showDashboard();
 };
+
 })();
 </script>
 </body></html>`;
@@ -2182,7 +2178,8 @@ export default {
       }
 
       const active = filtered.slice(0, limit);
-      const subContent = btoa(active.map(c => c.config).join("\n"));
+      const rawContent = active.map(c => c.config).join("\n");
+      const subContent = btoa(unescape(encodeURIComponent(rawContent)));
 
       return new Response(subContent, {
         headers: { "Content-Type": "text/plain; charset=utf-8", "Access-Control-Allow-Origin": "*" }
@@ -2225,7 +2222,9 @@ export default {
       if (client.usedVol >= client.limitVol) return new Response("Subscription expired (Volume limit)", { status: 403 });
 
       const configs = subData.configs || [];
-      return new Response(btoa(configs.join("\n")), {
+      const rawContent = configs.join("\n");
+      const subContent = btoa(unescape(encodeURIComponent(rawContent)));
+      return new Response(subContent, {
         headers: { "Content-Type": "text/plain; charset=utf-8", "Access-Control-Allow-Origin": "*" }
       });
     }
