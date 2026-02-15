@@ -1614,7 +1614,7 @@ async function loadSubmissions(){
   const d=await api("/submissions");
   document.getElementById("submissions-list").innerHTML=(d.submissions||[]).map(s=>{
     const id = s.id || btoa(s.configs?.[0] || "");
-    const preview = (s.configs || []).slice(0, 2).join("\n");
+    const preview = (s.configs || []).slice(0, 2).join("\\n");
     return \`<div class="config-card"><span class="badge badge-pending">Bundle (\${s.configs?.length||0})</span> @\${s.username}<div style="color:#888;font-size:12px;margin:4px 0">Sources: \${s.sources?.join(', ')||'Unknown'}</div><code>\${preview}...</code><div style="margin-top:8px"><button class="btn-success" onclick="approveSub('\${id}')">✅ Approve</button> <button class="btn-danger" onclick="rejectSub('\${id}')">❌ Reject</button></div></div>\`;
   }).join("")||"<p>No pending submissions.</p>";
 }
