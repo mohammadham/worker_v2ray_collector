@@ -1472,7 +1472,7 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 </div>
 <div class="loading" id="loading">Processing...</div>
 <script>
-let TOKEN="";let currentPage=1;let totalPages=1;const API=location.origin+"/dashboard/api";
+let TOKEN="";let currentPage=1;let totalPages=1;const API="/dashboard/api";
 function showLoading(){document.getElementById("loading").classList.add("active")}
 function hideLoading(){document.getElementById("loading").classList.remove("active")}
 async function api(path,method="GET",body=null){
@@ -1495,27 +1495,43 @@ async function login(){
   const p=document.getElementById("password").value;
   const err = document.getElementById("login-error");
   err.style.display="none";
+  showLoading();
   try{
+    console.log("Attempting login to:", API + "/login");
     const r=await fetch(API+"/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:p})});
     const d=await r.json();
+    hideLoading();
     if(r.ok && d.token){
       TOKEN=d.token;
       localStorage.setItem("token",TOKEN);
-      showDashboard();
+      await showDashboard();
     } else {
       err.style.display="block";
       err.textContent=d.error || "Invalid credentials";
     }
   }catch(e){
+    hideLoading();
     err.style.display="block";
     err.textContent="Login failed: " + e.message;
+    console.error("Login error:", e);
   }
 }
 function logout(){TOKEN="";localStorage.removeItem("token");location.reload();}
 async function showDashboard(){
-  document.getElementById("login").style.display="none";
-  document.getElementById("dashboard").style.display="block";
-  await loadStats();await loadLinks();await loadChannels();await loadConfigs();await loadTemplates();await loadSubmissions();await loadSettings();
+  try {
+    document.getElementById("login").style.display="none";
+    document.getElementById("dashboard").style.display="block";
+    showLoading();
+    await Promise.all([
+      loadStats(), loadLinks(), loadChannels(), loadConfigs(),
+      loadTemplates(), loadSubmissions(), loadSettings()
+    ]);
+    hideLoading();
+  } catch (e) {
+    hideLoading();
+    alert("Error loading dashboard: " + e.message);
+    console.error("Dashboard init error:", e);
+  }
 }
 async function loadStats(){
   const d=await api("/stats");
@@ -1686,9 +1702,18 @@ async function handleDashboardAPI(env, request, path) {
   const url = new URL(request.url);
   const method = request.method;
 
+  // Normalize path
+  const normalizedPath = path.endsWith("/") ? path.slice(0, -1) : path;
+
   // Login - API موجود قبلی
-  if (path === "/login" && method === "POST") {
-    const { username, password } = await request.json();
+  if (normalizedPath === "/login" && method === "POST") {
+    let credentials;
+    try {
+      credentials = await request.json();
+    } catch (e) {
+      return jsonResp({ error: "Invalid request body" }, 400);
+    }
+    const { username, password } = credentials;
 
     // Safety check for unset credentials
     const validUser = env.DASHBOARD_USER || "";
