@@ -1475,6 +1475,24 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 </div>
 <div id="dashboardz" style="display:none">
 <script>
+// Early function definitions to prevent "not defined" errors
+  window.logout = window.logout || function() {
+    localStorage.removeItem('token');
+    window.location.reload();
+  };
+  window.showTab = window.showTab || function(name) {
+    document.querySelectorAll(".section").forEach(function(s){s.classList.remove("active");});
+    document.querySelectorAll(".tab").forEach(function(t){t.classList.remove("active");});
+    var el = document.getElementById(name);
+    if(el) el.classList.add("active");
+    // Find and activate the clicked tab
+    var tabs = document.querySelectorAll(".tab");
+    tabs.forEach(function(t){
+      if(t.textContent.indexOf(name) > -1 || t.getAttribute('onclick').indexOf(name) > -1) {
+        t.classList.add("active");
+      }
+    });
+  };
   if (localStorage.getItem('token')) {
     document.getElementById('login-container').style.display = 'none';
     document.getElementById('dashboardz').style.display = 'block';
