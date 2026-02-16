@@ -8,7 +8,7 @@ import {
 } from '../services/storage.js';
 import { checkAndDistribute } from '../services/fetcher.js';
 import { pushToQueue } from '../services/queue.js';
-import { formatMessage } from '../handlers/formatter.js';
+import { formatMessage } from './formatter.js';
 import { DEFAULT_SETTINGS, DEFAULT_TEMPLATES } from '../constants.js';
 import { sendTelegram } from '../utils/telegram.js';
 
