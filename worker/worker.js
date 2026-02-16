@@ -230,6 +230,12 @@ export default {
       });
     }
 
+    // App Update API (Public)
+    if (url.pathname === "/api/app-update" && request.method === "GET") {
+      const info = await kvGet(env, "app_update_info", { version: "1.0.0", description: "Default", link: "", force: false });
+      return jsonResp(info);
+    }
+
     // Usage Reporting API
     if (url.pathname === "/api/user-sub/report" && request.method === "POST") {
       const { code, volumeMB, activate } = await request.json();

@@ -200,6 +200,9 @@ The bot provides a REST API for management and integration. All dashboard endpoi
   - Batch: `{"votes": [{"hash": "...", "type": "like"}, ...]}`
 - **POST `/dashboard/api/settings`**: Update bot settings.
   - Body: `{"key": "all", "value": { ... }}`
+- **GET `/dashboard/api/app-update`**: Fetch current Android app update info.
+- **POST `/dashboard/api/app-update`**: Update Android app release info.
+  - Body: `{"version": "1.2.0", "description": "New features", "link": "https://...", "force": true}`
 
 ### Public Endpoints (No Auth)
 
@@ -234,6 +237,19 @@ The bot provides a REST API for management and integration. All dashboard endpoi
       { "country": "Germany", "countryCode": "DE", "count": 15 },
       { "country": "United States", "countryCode": "US", "count": 8 }
     ]
+    ```
+
+- **GET `/api/app-update`**
+  - Returns latest Android app version and download information.
+  - Example Response:
+    ```json
+    {
+      "version": "1.2.0",
+      "description": "Bug fixes and performance improvements",
+      "link": "https://example.com/app.apk",
+      "force": false,
+      "updated_at": "2024-03-20T12:00:00.000Z"
+    }
     ```
 
 ---

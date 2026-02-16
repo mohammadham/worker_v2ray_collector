@@ -271,6 +271,18 @@ export async function handleDashboardAPI(env, request, path) {
     return jsonResp({ settings });
   }
 
+  // App Update Info
+  if (path === "/app-update" && method === "GET") {
+    const info = await kvGet(env, "app_update_info", { version: "1.0.0", description: "Default", link: "", force: false });
+    return jsonResp({ info });
+  }
+  if (path === "/app-update" && method === "POST") {
+    const { version, description, link, force } = await request.json();
+    const info = { version, description, link, force: !!force, updated_at: new Date().toISOString() };
+    await kvSet(env, "app_update_info", info);
+    return jsonResp({ info });
+  }
+
   // Fetch Now
   if (path === "/fetch-now" && method === "POST") {
     const result = await checkAndDistribute(env);

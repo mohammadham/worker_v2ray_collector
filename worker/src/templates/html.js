@@ -85,6 +85,7 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 <div class="tab" onclick="showTab('templates')">📝 Templates</div>
 <div class="tab" onclick="showTab('submissions')">👥 Submissions</div>
 <div class="tab" onclick="showTab('settings')">⚙️ Settings</div>
+<div class="tab" onclick="showTab('app-update')">📱 App Update</div>
 <div class="tab" onclick="showTab('actions')">⚡ Actions</div>
 </div>
 <div id="links" class="section active glass">
@@ -136,6 +137,18 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 </label>
 <input id="redirect-url" placeholder="https://example.com" style="margin-bottom:12px">
 <button class="btn-sm" onclick="saveRedirectSettings()">Save Redirect Settings</button>
+</div>
+</div>
+<div id="app-update" class="section glass">
+<div style="max-width:600px;margin:0 auto">
+<h3 style="color:#00d4ff;margin-bottom:20px">Android App Update Management</h3>
+<div class="settings-item"><label>Latest Version (e.g. 1.2.0)</label><input id="app-version"></div>
+<div class="settings-item"><label>Download Link (APK URL)</label><input id="app-link"></div>
+<div class="settings-item"><label>Update Description (Persian/English)</label><textarea id="app-description" style="height:120px"></textarea></div>
+<label style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+<input type="checkbox" id="app-force" style="width:auto"> Force Update (Require users to update)
+</label>
+<button class="btn-primary" onclick="saveAppUpdate()">Save Update Info</button>
 </div>
 </div>
 <div id="actions" class="section glass" style="text-align:center;padding:40px">
@@ -206,7 +219,7 @@ async function showDashboard(){
     showLoading();
     await Promise.all([
       loadStats(), loadLinks(), loadChannels(), loadConfigs(),
-      loadTemplates(), loadSubmissions(), loadSettings()
+      loadTemplates(), loadSubmissions(), loadSettings(), loadAppUpdate()
     ]);
     hideLoading();
   } catch (e) {
@@ -338,6 +351,25 @@ async function saveRedirectSettings(){
   await api("/settings","POST",{key:"enableRedirect",value:enableRedirect});
   await api("/settings","POST",{key:"redirectUrl",value:redirectUrl});
   alert("Redirect settings saved!");
+}
+async function loadAppUpdate(){
+  const d=await api("/app-update");
+  if(d.info){
+    document.getElementById("app-version").value=d.info.version||"";
+    document.getElementById("app-link").value=d.info.link||"";
+    document.getElementById("app-description").value=d.info.description||"";
+    document.getElementById("app-force").checked=d.info.force||false;
+  }
+}
+async function saveAppUpdate(){
+  const body={
+    version:document.getElementById("app-version").value,
+    link:document.getElementById("app-link").value,
+    description:document.getElementById("app-description").value,
+    force:document.getElementById("app-force").checked
+  };
+  await api("/app-update","POST",body);
+  alert("App update info saved!");
 }
 async function fetchNow(){
   document.getElementById("action-result").innerHTML="<p>Fetching...</p>";
