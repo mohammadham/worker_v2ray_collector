@@ -1,7 +1,42 @@
 import { kvGet, kvSet } from '../utils/kv.js';
-import { testConfig, ALL_BUCKETS } from '../utils/vpn.js';
+import { testConfig, ALL_BUCKETS, getFlag } from '../utils/vpn.js';
 import { calculateQualityScore } from './voting.js';
 import { DEFAULT_SETTINGS } from '../constants.js';
+
+// ======== Country Indexing ========
+export async function updateCountryIndex(env, countryCode) {
+  if (!countryCode || countryCode === "UN") return;
+
+  const allForCountry = [];
+  for (const bucketKey of ALL_BUCKETS) {
+    const list = await kvGet(env, bucketKey, []);
+    const filtered = list.filter(c =>
+      (c.countryCode === countryCode || c.test_result?.countryCode === countryCode) &&
+      c.test_result?.status === "active"
+    );
+    allForCountry.push(...filtered);
+  }
+
+  allForCountry.sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
+  const top100 = allForCountry.slice(0, 100);
+
+  await kvSet(env, `top:country:${countryCode}`, top100);
+}
+
+export async function updateAllCountryIndexes(env) {
+  const countries = new Set();
+  for (const bucketKey of ALL_BUCKETS) {
+    const list = await kvGet(env, bucketKey, []);
+    list.forEach(c => {
+      const cc = c.countryCode || c.test_result?.countryCode;
+      if (cc && cc !== "UN") countries.add(cc);
+    });
+  }
+
+  for (const cc of countries) {
+    await updateCountryIndex(env, cc);
+  }
+}
 
 // ======== Cleanup Logic (Per Bucket) ========
 export async function manageStorage(env, configsArray, bucketKey) {
@@ -68,6 +103,8 @@ export async function cleanupConfigs(env) {
   let totalRemoved = 0;
   let totalKept = 0;
 
+  const affectedCountries = new Set();
+
   for (const bucketKey of ALL_BUCKETS) {
     const stored = await kvGet(env, bucketKey, []);
     if (!stored.length) continue;
@@ -106,6 +143,8 @@ export async function cleanupConfigs(env) {
 
       if (shouldRemove) {
         removed.push(config);
+        const cc = config.countryCode || config.test_result?.countryCode;
+        if (cc) affectedCountries.add(cc);
       } else {
         kept.push(config);
       }
@@ -116,6 +155,11 @@ export async function cleanupConfigs(env) {
       totalRemoved += removed.length;
     }
     totalKept += kept.length;
+  }
+
+  // Update indexes for countries that had configs removed
+  for (const cc of affectedCountries) {
+    await updateCountryIndex(env, cc);
   }
 
   return { removed: totalRemoved, kept: totalKept };

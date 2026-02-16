@@ -4,7 +4,7 @@ import {
 } from '../utils/vpn.js';
 import { voteConfig, calculateQualityScore } from '../services/voting.js';
 import {
-  manageStorage, cleanupConfigs, incrementUserStats
+  manageStorage, cleanupConfigs, incrementUserStats, updateCountryIndex
 } from '../services/storage.js';
 import { checkAndDistribute } from '../services/fetcher.js';
 import { pushToQueue } from '../services/queue.js';
@@ -227,7 +227,11 @@ export async function handleDashboardAPI(env, request, path) {
         const currentStored = await kvGet(env, bucketKey, []);
         const newEntry = {
           config: cfg, hash: h, type, sources: sub.sources,
-          test_result: testResult, created_at: new Date().toISOString(),
+          test_result: testResult,
+          country: testResult.country,
+          countryCode: testResult.countryCode,
+          flag: getFlag(testResult.countryCode),
+          created_at: new Date().toISOString(),
           failed_tests: testResult.status === "dead" ? 1 : 0,
           likes_count: 0, dislikes_count: 0, vote_score: 0, recent_voters: [],
           ...extractServer(cfg)
@@ -235,6 +239,10 @@ export async function handleDashboardAPI(env, request, path) {
         newEntry.quality_score = calculateQualityScore(newEntry);
         const cleaned = await manageStorage(env, [newEntry, ...currentStored], bucketKey);
         await kvSet(env, bucketKey, cleaned);
+
+        if (newEntry.countryCode && newEntry.countryCode !== "UN") {
+          await updateCountryIndex(env, newEntry.countryCode);
+        }
       }
 
       return jsonResp({ status: "approved" });
@@ -291,6 +299,11 @@ export async function handleDashboardAPI(env, request, path) {
           config.test_result = testResult;
           if (testResult.status === "dead") config.failed_tests = (config.failed_tests || 0) + 1;
           else config.failed_tests = 0;
+
+          config.country = testResult.country;
+          config.countryCode = testResult.countryCode;
+          config.flag = getFlag(testResult.countryCode);
+
           config.quality_score = calculateQualityScore(config);
           return config;
         }));
@@ -299,6 +312,9 @@ export async function handleDashboardAPI(env, request, path) {
       await kvSet(env, bucketKey, results);
       totalTested += results.length;
     }
+    // Refresh all indexes after a full retest
+    const { updateAllCountryIndexes } = await import('../services/storage.js');
+    await updateAllCountryIndexes(env);
     return jsonResp({ tested: totalTested });
   }
 

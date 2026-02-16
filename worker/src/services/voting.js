@@ -70,6 +70,14 @@ export async function voteConfig(env, configHash, userId, voteType, configType =
   cfg.last_vote_at = new Date().toISOString();
 
   await kvSet(env, bucketKey, configs);
+
+  // Update country index
+  const cc = cfg.countryCode || cfg.test_result?.countryCode;
+  if (cc) {
+    const { updateCountryIndex } = await import('./storage.js');
+    await updateCountryIndex(env, cc);
+  }
+
   return { likes: cfg.likes_count, dislikes: cfg.dislikes_count, score: cfg.vote_score };
 }
 

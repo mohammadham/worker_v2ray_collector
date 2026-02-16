@@ -5,7 +5,7 @@ import {
   extractChannelSource, testConfig, getBucket, ALL_BUCKETS
 } from '../utils/vpn.js';
 import { voteConfig, calculateQualityScore } from '../services/voting.js';
-import { manageStorage, cleanupConfigs, incrementUserStats } from '../services/storage.js';
+import { manageStorage, cleanupConfigs, incrementUserStats, updateCountryIndex } from '../services/storage.js';
 import { pushToQueue } from '../services/queue.js';
 import { checkAndDistribute } from '../services/fetcher.js';
 import { formatMessage, configKeyboard } from './formatter.js';
@@ -321,7 +321,11 @@ export async function handleCallback(env, callback) {
 
         const newEntry = {
           config: cfg, hash: h, type, sources: sub.sources,
-          test_result: testResult, created_at: new Date().toISOString(),
+          test_result: testResult,
+          country: testResult.country,
+          countryCode: testResult.countryCode,
+          flag: getFlag(testResult.countryCode),
+          created_at: new Date().toISOString(),
           failed_tests: testResult.status === "dead" ? 1 : 0,
           likes_count: 0, dislikes_count: 0, vote_score: 0, recent_voters: [],
           ...extractServer(cfg)
@@ -330,6 +334,10 @@ export async function handleCallback(env, callback) {
 
         const final = await manageStorage(env, [newEntry, ...currentStored], bucketKey);
         await kvSet(env, bucketKey, final);
+
+        if (newEntry.countryCode && newEntry.countryCode !== "UN") {
+          await updateCountryIndex(env, newEntry.countryCode);
+        }
       }
       await sendTelegram(env, chatId, "✅ Approved and published!");
     }

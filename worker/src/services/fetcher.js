@@ -2,10 +2,10 @@ import { kvGet, kvSet } from '../utils/kv.js';
 import { sendTelegram } from '../utils/telegram.js';
 import {
   extractConfigs, hashConfig, extractChannelSource, testConfig,
-  detectType, extractServer, getBucket
+  detectType, extractServer, getBucket, getFlag
 } from '../utils/vpn.js';
 import { calculateQualityScore } from './voting.js';
-import { manageStorage } from './storage.js';
+import { manageStorage, updateCountryIndex } from './storage.js';
 import { pushToQueue } from './queue.js';
 import { formatMessage, configKeyboard } from '../handlers/formatter.js';
 import { DEFAULT_SETTINGS } from '../constants.js';
@@ -65,6 +65,9 @@ export async function checkAndDistribute(env) {
       type,
       sources: item.sources,
       test_result: testResult,
+      country: testResult.country,
+      countryCode: testResult.countryCode,
+      flag: getFlag(testResult.countryCode),
       created_at: new Date().toISOString(),
       failed_tests: 0,
       likes_count: 0,
@@ -92,12 +95,18 @@ export async function checkAndDistribute(env) {
     sentCount++;
   }
 
-  // Save each bucket
+  // Save each bucket and update indexes
   for (const [bucketKey, newItems] of Object.entries(bucketGroups)) {
     if (newItems.length === 0) continue;
     const currentStored = await kvGet(env, bucketKey, []);
     const final = await manageStorage(env, [...newItems, ...currentStored], bucketKey);
     await kvSet(env, bucketKey, final);
+
+    // Update country indexes for affected countries in this bucket
+    const affectedCountries = new Set(newItems.map(c => c.countryCode).filter(cc => cc && cc !== "UN"));
+    for (const cc of affectedCountries) {
+      await updateCountryIndex(env, cc);
+    }
   }
 
   const summary = `✅ Summary:\n- Distributed: ${sentCount}\n- Skipped (Invalid): ${invalidCount}\n- Total Scanned: ${processedItems.length}`;

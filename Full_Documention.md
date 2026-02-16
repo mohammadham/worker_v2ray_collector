@@ -120,6 +120,8 @@ Over time, configurations may die or become slow. The cleanup task runs daily, c
 - **Sharded Storage Architecture**: Configurations are sharded into **20 buckets** based on their protocol (`vless`, `vmess`, `trojan`, `ss`) and the first character of their hash (5 sub-groups per protocol).
   - **Key Format**: `cfgs:{protocol}:{group}` (e.g., `cfgs:vless:1`).
   - **Bucket Logic**: Chars `0-6` → G1, `7-d` → G2, `e-k` → G3, `l-r` → G4, `s-z` → G5.
+- **Country-Specific Hot-Path Indexing**: The system maintains an optimized index for each country (`top:country:{CC}`) containing the top 100 highest-quality active configurations. This allows for near-instant responses for location-based API queries.
+- **Response Caching Layer**: Public API endpoints (`/api/configs`, `/api/sub`) utilize a frequency-based cache in KV with a 5-minute TTL. Responses are cached based on request parameters, further reducing database load for high-traffic requests.
 - **Optimized Voting Storage**: Vote counts (`likes_count`, `dislikes_count`) and a FIFO queue of the last 20 voter IDs (`recent_voters`) are stored directly within each configuration object. This eliminates redundant KV subrequests when listing configurations.
 - **Storage Limit**: Each bucket maintains a strict limit of **100 configurations**, allowing for a total system capacity of **2,000 active configurations**.
 - **Smart Deduplication**: Configurations are compared based on their core connection parameters. Any text after the `#` symbol or the `ps` field in VMess is ignored during comparison.

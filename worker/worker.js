@@ -50,6 +50,18 @@ async function migrateData(env) {
   }
 }
 
+async function getCachedResponse(env, key) {
+  try {
+    return await env.VPN_CACHE.get(`cache:${key}`, "json");
+  } catch { return null; }
+}
+
+async function setCacheResponse(env, key, data, ttl = 300) {
+  try {
+    await env.VPN_CACHE.put(`cache:${key}`, JSON.stringify(data), { expirationTtl: ttl });
+  } catch {}
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -98,32 +110,46 @@ export default {
       const minQuality = parseInt(url.searchParams.get("min_quality")) || 0;
       const sortBy = url.searchParams.get("sort") || "newest";
 
-      // Aggregate from all buckets
-      const { ALL_BUCKETS } = await import('./src/utils/vpn.js');
+      // Check Cache
+      const cacheKey = `configs:${limit}:${country}:${minQuality}:${sortBy}`;
+      const cached = await getCachedResponse(env, cacheKey);
+      if (cached) return jsonResp(cached);
+
       let filtered = [];
-      for (const bucketKey of ALL_BUCKETS) {
-        const list = await kvGet(env, bucketKey, []);
-        filtered.push(...list.filter(c => c.test_result?.status === "active" && (c.quality_score || 0) >= minQuality));
-      }
 
-      if (country) {
-        filtered = filtered.filter(c => c.test_result?.countryCode === country);
-      }
-
-      if (sortBy === "best") {
-        filtered.sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
+      // Optimization: Use Country Index if available
+      if (country && sortBy === "best" && minQuality <= 0) {
+        filtered = await kvGet(env, `top:country:${country}`, []);
       } else {
-        filtered.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        // Fallback: Aggregate from all buckets
+        const { ALL_BUCKETS } = await import('./src/utils/vpn.js');
+        for (const bucketKey of ALL_BUCKETS) {
+          const list = await kvGet(env, bucketKey, []);
+          filtered.push(...list.filter(c => c.test_result?.status === "active" && (c.quality_score || 0) >= minQuality));
+        }
+
+        if (country) {
+          filtered = filtered.filter(c => (c.countryCode === country || c.test_result?.countryCode === country));
+        }
+
+        if (sortBy === "best") {
+          filtered.sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
+        } else {
+          filtered.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        }
       }
 
       const active = filtered.slice(0, limit);
-      return jsonResp({
+      const result = {
         count: active.length,
         country: country || "ALL",
         min_quality: minQuality,
         sort: sortBy,
         configs: active.map(c => c.config)
-      });
+      };
+
+      await setCacheResponse(env, cacheKey, result, 300);
+      return jsonResp(result);
     }
 
     // Subscription API (Base64 for V2Ray clients)
@@ -133,20 +159,32 @@ export default {
       const minQuality = parseInt(url.searchParams.get("min_quality")) || 0;
       const sortBy = url.searchParams.get("sort") || "best";
 
-      const { ALL_BUCKETS } = await import('./src/utils/vpn.js');
+      // Check Cache
+      const cacheKey = `sub:${limit}:${country}:${minQuality}:${sortBy}`;
+      const cached = await getCachedResponse(env, cacheKey);
+      if (cached) return new Response(cached.content, { headers: { "Content-Type": "text/plain; charset=utf-8", "Access-Control-Allow-Origin": "*" } });
+
       let filtered = [];
-      for (const bucketKey of ALL_BUCKETS) {
-        const list = await kvGet(env, bucketKey, []);
-        filtered.push(...list.filter(c => c.test_result?.status === "active" && (c.quality_score || 0) >= minQuality));
+
+      if (country && sortBy === "best" && minQuality <= 0) {
+        filtered = await kvGet(env, `top:country:${country}`, []);
+      } else {
+        const { ALL_BUCKETS } = await import('./src/utils/vpn.js');
+        for (const bucketKey of ALL_BUCKETS) {
+          const list = await kvGet(env, bucketKey, []);
+          filtered.push(...list.filter(c => c.test_result?.status === "active" && (c.quality_score || 0) >= minQuality));
+        }
+
+        if (country) filtered = filtered.filter(c => (c.countryCode === country || c.test_result?.countryCode === country));
+
+        if (sortBy === "best") filtered.sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
+        else filtered.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
       }
-
-      if (country) filtered = filtered.filter(c => c.test_result?.countryCode === country);
-
-      if (sortBy === "best") filtered.sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
-      else filtered.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
       const active = filtered.slice(0, limit);
       const subContent = btoa(active.map(c => c.config).join("\n"));
+
+      await setCacheResponse(env, cacheKey, { content: subContent }, 300);
 
       return new Response(subContent, {
         headers: { "Content-Type": "text/plain; charset=utf-8", "Access-Control-Allow-Origin": "*" }
