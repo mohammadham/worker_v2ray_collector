@@ -27,3 +27,13 @@ export async function kvDelete(env, key) {
   await env.VPN_CACHE.delete(key);
   KV_CACHE.delete(key);
 }
+
+export async function trackUser(env, chatId) {
+  if (!chatId) return;
+  const sChatId = String(chatId);
+  const users = await kvGet(env, "bot_users", []);
+  if (!users.includes(sChatId)) {
+    users.push(sChatId);
+    await kvSet(env, "bot_users", users);
+  }
+}

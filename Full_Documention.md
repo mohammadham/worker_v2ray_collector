@@ -117,16 +117,22 @@ Over time, configurations may die or become slow. The cleanup task runs daily, c
 - **Testing**: Dual-stage testing (DNS followed by HTTP/HTTPS HEAD) ensures high accuracy of "Active" status.
 
 ### 5.3 Storage & Deduplication Policies
-- **Storage Limit**: The bot maintains a strict limit of **1,000 configurations** in KV.
-- **Smart Deduplication**: Configurations are compared based on their core connection parameters (Host, Port, ID, Cipher). Any text after the `#` symbol or the `ps` field in VMess is ignored during comparison.
-- **Quality-Based Management**: Configurations with extremely low **Quality Scores** (due to multiple reports) are prioritized for removal.
-- **Auto-Cleanup Pipeline**: When the storage limit is reached, the bot performs a 6-stage cleanup:
+- **Sharded Storage Architecture**: Configurations are sharded into **20 buckets** based on their protocol (`vless`, `vmess`, `trojan`, `ss`) and the first character of their hash (5 sub-groups per protocol).
+  - **Key Format**: `cfgs:{protocol}:{group}` (e.g., `cfgs:vless:1`).
+  - **Bucket Logic**: Chars `0-6` → G1, `7-d` → G2, `e-k` → G3, `l-r` → G4, `s-z` → G5.
+- **Smart Provider Tracking**: Each configuration stores a `provider` field, extracted from the source text or internal metadata (ps/hash). If no source is found, it defaults to the configured `channelUsername`.
+- **Country-Specific Hot-Path Indexing**: The system maintains an optimized index for each country (`top:country:{CC}`) containing the top 100 highest-quality active configurations. This allows for near-instant responses for location-based API queries.
+- **Response Caching Layer**: Public API endpoints (`/api/configs`, `/api/sub`) utilize a frequency-based cache in KV with a 5-minute TTL. Responses are cached based on request parameters, further reducing database load for high-traffic requests.
+- **Optimized Voting Storage**: Vote counts (`likes_count`, `dislikes_count`) and a FIFO queue of the last 20 voter IDs (`recent_voters`) are stored directly within each configuration object. This eliminates redundant KV subrequests when listing configurations.
+- **Storage Limit**: Each bucket maintains a strict limit of **100 configurations**, allowing for a total system capacity of **2,000 active configurations**.
+- **Smart Deduplication**: Configurations are compared based on their core connection parameters. Any text after the `#` symbol or the `ps` field in VMess is ignored during comparison.
+- **Auto-Cleanup Pipeline**: When a bucket reaches its 100-item limit, the bot performs a 6-stage cleanup on that specific shard:
   0.  **Quality Purge**: Remove configurations with a Quality Score below -200.
   1.  **Remove Dead**: Delete all configs marked as "dead".
   2.  **Age Check**: Delete configs older than **10 days**.
   3.  **Latency Check**: Delete configs with high latency (ping > 2000ms).
-  4.  **Proactive Testing**: Retest oldest configs, update their Quality Score, and remove those that fail.
-  5.  **FIFO**: Remove oldest configs if still over the limit.
+  4.  **Proactive Testing**: Retest oldest configs in the bucket and remove those that fail.
+  5.  **FIFO**: Remove oldest configs if the bucket is still over the limit.
 
 ### 5.4 Publish Queue Configuration
 Admins can enable the **Publish Queue** in the dashboard settings:
@@ -195,6 +201,13 @@ The bot provides a REST API for management and integration. All dashboard endpoi
   - Batch: `{"votes": [{"hash": "...", "type": "like"}, ...]}`
 - **POST `/dashboard/api/settings`**: Update bot settings.
   - Body: `{"key": "all", "value": { ... }}`
+- **GET `/dashboard/api/app-update`**: Fetch current Android app update info.
+- **POST `/dashboard/api/app-update`**: Update Android app release info.
+  - Body: `{"version": "1.2.0", "description": "New features", "link": "https://...", "force": true}`
+- **POST `/dashboard/api/announcements`**: Update app announcements.
+  - Body: `{"title": "...", "message": "...", "active": true}`
+- **POST `/dashboard/api/broadcast`**: Send a message to all Telegram bot users.
+  - Body: `{"message": "..."}`
 
 ### Public Endpoints (No Auth)
 
@@ -229,6 +242,31 @@ The bot provides a REST API for management and integration. All dashboard endpoi
       { "country": "Germany", "countryCode": "DE", "count": 15 },
       { "country": "United States", "countryCode": "US", "count": 8 }
     ]
+    ```
+
+- **GET `/api/app-update`**
+  - Returns latest Android app version and download information.
+  - Example Response:
+    ```json
+    {
+      "version": "1.2.0",
+      "description": "Bug fixes and performance improvements",
+      "link": "https://example.com/app.apk",
+      "force": false,
+      "updated_at": "2024-03-20T12:00:00.000Z"
+    }
+    ```
+
+- **GET `/api/announcements`**
+  - Returns the current active app announcement.
+  - Example Response:
+    ```json
+    {
+      "title": "New Server added!",
+      "message": "We have added 5 new servers in Germany. Enjoy!",
+      "active": true,
+      "updated_at": "2024-03-20T12:00:00.000Z"
+    }
     ```
 
 ---

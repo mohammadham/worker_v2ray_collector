@@ -1,20 +1,55 @@
-import { kvGet, kvSet, kvDelete } from '../utils/kv.js';
-import { testConfig } from '../utils/vpn.js';
-import { getConfigVotes, calculateQualityScore } from './voting.js';
+import { kvGet, kvSet } from '../utils/kv.js';
+import { testConfig, ALL_BUCKETS, getFlag } from '../utils/vpn.js';
+import { calculateQualityScore } from './voting.js';
 import { DEFAULT_SETTINGS } from '../constants.js';
 
-// ======== Cleanup Logic ========
-export async function manageStorage(env, newCount, configsArray = null) {
-  const MAX_CONFIGS = 1000;
-  let stored = configsArray || await kvGet(env, "stored_configs", []);
+// ======== Country Indexing ========
+export async function updateCountryIndex(env, countryCode) {
+  if (!countryCode || countryCode === "UN") return;
 
-  if (stored.length + newCount <= MAX_CONFIGS) return stored;
+  const allForCountry = [];
+  for (const bucketKey of ALL_BUCKETS) {
+    const list = await kvGet(env, bucketKey, []);
+    const filtered = list.filter(c =>
+      (c.countryCode === countryCode || c.test_result?.countryCode === countryCode) &&
+      c.test_result?.status === "active"
+    );
+    allForCountry.push(...filtered);
+  }
 
-  const target = MAX_CONFIGS - newCount;
+  allForCountry.sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
+  const top100 = allForCountry.slice(0, 100);
+
+  await kvSet(env, `top:country:${countryCode}`, top100);
+}
+
+export async function updateAllCountryIndexes(env) {
+  const countries = new Set();
+  for (const bucketKey of ALL_BUCKETS) {
+    const list = await kvGet(env, bucketKey, []);
+    list.forEach(c => {
+      const cc = c.countryCode || c.test_result?.countryCode;
+      if (cc && cc !== "UN") countries.add(cc);
+    });
+  }
+
+  for (const cc of countries) {
+    await updateCountryIndex(env, cc);
+  }
+}
+
+// ======== Cleanup Logic (Per Bucket) ========
+export async function manageStorage(env, configsArray, bucketKey) {
+  const MAX_CONFIGS = 100;
+  let stored = configsArray;
+
+  if (stored.length <= MAX_CONFIGS) return stored;
+
+  const target = MAX_CONFIGS;
   const now = Date.now();
   const TEN_DAYS = 10 * 24 * 60 * 60 * 1000;
 
-  // Stage 0: Remove extremely low quality (e.g. many reports)
+  // Stage 0: Remove extremely low quality
   stored.sort((a, b) => (a.quality_score || 0) - (b.quality_score || 0));
   while (stored.length > target && (stored[0].quality_score || 0) < -200) {
     stored.shift();
@@ -32,8 +67,7 @@ export async function manageStorage(env, newCount, configsArray = null) {
   });
   if (stored.length <= target) return stored;
 
-  // Stage 3: Remove High Latency (High Ping)
-  // Sort by latency descending (highest first)
+  // Stage 3: Remove High Latency
   stored.sort((a, b) => (b.test_result?.latency || 9999) - (a.test_result?.latency || 9999));
   while (stored.length > target && (stored[0].test_result?.latency || 0) > 2000) {
     stored.shift();
@@ -41,7 +75,6 @@ export async function manageStorage(env, newCount, configsArray = null) {
   if (stored.length <= target) return stored;
 
   // Stage 4: Retest oldest and remove failed
-  // Sort by created_at ascending (oldest first)
   stored.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   for (let i = 0; i < stored.length && stored.length > target; i++) {
     const testResult = await testConfig(stored[i].config);
@@ -50,8 +83,7 @@ export async function manageStorage(env, newCount, configsArray = null) {
        i--;
     } else {
       stored[i].test_result = testResult;
-      const votes = await getConfigVotes(env, stored[i].hash);
-      stored[i].quality_score = calculateQualityScore(stored[i], votes);
+      stored[i].quality_score = calculateQualityScore(stored[i]);
     }
   }
   if (stored.length <= target) return stored;
@@ -67,55 +99,70 @@ export async function manageStorage(env, newCount, configsArray = null) {
 
 export async function cleanupConfigs(env) {
   const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
-  const stored = await kvGet(env, "stored_configs", []);
   const now = Date.now();
-  const removed = [];
-  const kept = [];
+  let totalRemoved = 0;
+  let totalKept = 0;
 
-  for (const config of stored) {
-    let shouldRemove = false;
+  const affectedCountries = new Set();
 
-    // 1. Check Age (Standard 10-day rule from user)
-    const created = new Date(config.created_at).getTime();
-    if (!isNaN(created)) {
-      const daysSinceCreated = (now - created) / (1000 * 60 * 60 * 24);
-      const votes = await getConfigVotes(env, config.hash);
-      const hasLikes = votes.likes.length >= (settings.minLikesToKeep || 1);
+  for (const bucketKey of ALL_BUCKETS) {
+    const stored = await kvGet(env, bucketKey, []);
+    if (!stored.length) continue;
 
-      // If older than 10 days and no significant likes, or older than autoDeleteDays
-      if (daysSinceCreated > 10 && !hasLikes) {
-        shouldRemove = true;
-      } else if (daysSinceCreated > (settings.autoDeleteDays || 15) && !hasLikes) {
-        shouldRemove = true;
-      }
-    }
+    const kept = [];
+    const removed = [];
 
-    // 2. Check Stale Test Results
-    if (!shouldRemove && config.test_result?.timestamp) {
-      const lastTest = new Date(config.test_result.timestamp).getTime();
-      if (!isNaN(lastTest)) {
-        const daysSinceTest = (now - lastTest) / (1000 * 60 * 60 * 24);
-        if (daysSinceTest > (settings.staleDeleteDays || 14)) {
+    for (const config of stored) {
+      let shouldRemove = false;
+
+      const created = new Date(config.created_at).getTime();
+      if (!isNaN(created)) {
+        const daysSinceCreated = (now - created) / (1000 * 60 * 60 * 24);
+        const hasLikes = (config.likes_count || 0) >= (settings.minLikesToKeep || 1);
+
+        if (daysSinceCreated > 10 && !hasLikes) {
+          shouldRemove = true;
+        } else if (daysSinceCreated > (settings.autoDeleteDays || 15) && !hasLikes) {
           shouldRemove = true;
         }
       }
+
+      if (!shouldRemove && config.test_result?.timestamp) {
+        const lastTest = new Date(config.test_result.timestamp).getTime();
+        if (!isNaN(lastTest)) {
+          const daysSinceTest = (now - lastTest) / (1000 * 60 * 60 * 24);
+          if (daysSinceTest > (settings.staleDeleteDays || 14)) {
+            shouldRemove = true;
+          }
+        }
+      }
+
+      if (!shouldRemove && config.failed_tests && config.failed_tests >= (settings.maxFailedTests || 50)) {
+        shouldRemove = true;
+      }
+
+      if (shouldRemove) {
+        removed.push(config);
+        const cc = config.countryCode || config.test_result?.countryCode;
+        if (cc) affectedCountries.add(cc);
+      } else {
+        kept.push(config);
+      }
     }
 
-    // 3. Check Failed Tests
-    if (!shouldRemove && config.failed_tests && config.failed_tests >= (settings.maxFailedTests || 50)) {
-      shouldRemove = true;
+    if (removed.length > 0) {
+      await kvSet(env, bucketKey, kept);
+      totalRemoved += removed.length;
     }
-
-    if (shouldRemove) {
-      removed.push(config);
-      await kvDelete(env, `votes_${config.hash}`);
-    } else {
-      kept.push(config);
-    }
+    totalKept += kept.length;
   }
 
-  await kvSet(env, "stored_configs", kept);
-  return { removed: removed.length, kept: kept.length };
+  // Update indexes for countries that had configs removed
+  for (const cc of affectedCountries) {
+    await updateCountryIndex(env, cc);
+  }
+
+  return { removed: totalRemoved, kept: totalKept };
 }
 
 export async function incrementUserStats(env, chatId, count) {

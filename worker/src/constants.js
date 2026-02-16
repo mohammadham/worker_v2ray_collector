@@ -26,5 +26,6 @@ export const DEFAULT_SETTINGS = {
   minLikesToKeep: 1,
   enableQueue: false,
   queueIntervalMin: 15,
-  queueBatchSize: 1
+  queueBatchSize: 1,
+  channelUsername: ""
 };
