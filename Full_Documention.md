@@ -34,38 +34,54 @@ The **VPN Config Bot Pro** is a powerful Cloudflare Worker that automates the li
 
 ## 3. System Architecture
 
+The project follows a modular, component-based architecture using ES Modules (ESM). The logic is organized into dedicated modules within the `worker/src/` directory, providing better maintainability and scalability.
+
+### Modular Structure:
+- **`worker/worker.js`**: The main entry point that handles routing and initializes the environment.
+- **`worker/src/handlers/`**:
+    - `bot.js`: Logic for handling Telegram webhook updates and callback queries.
+    - `dashboard.js`: Implementation of the Admin Dashboard REST API.
+    - `formatter.js`: Shared logic for formatting Telegram messages and keyboards.
+- **`worker/src/services/`**:
+    - `fetcher.js`: Orchestrates the scraping and testing of new configurations.
+    - `storage.js`: Manages KV persistence, deduplication, and automated cleanup.
+    - `voting.js`: Implements the quality scoring and community rating system.
+    - `queue.js`: Handles the delayed publication queue logic.
+- **`worker/src/utils/`**:
+    - `kv.js`: Optimized KV helpers with local in-memory caching.
+    - `telegram.js`: Rate-limited Telegram API client.
+    - `vpn.js`: Protocol-specific parsing (VLESS/VMess/Trojan/SS) and connectivity testing.
+- **`worker/src/templates/`**:
+    - `html.js`: Centralized storage for Dashboard and Portfolio UI templates.
+- **`worker/src/constants.js`**: Global configuration defaults and regex patterns.
+
+### Component Diagram:
+
 ```mermaid
 flowchart TB
-    subgraph "Cloudflare Worker Environment"
+    subgraph "Cloudflare Worker Environment (ESM)"
         direction TB
-        WH[Webhook Handler] -->|callback| TG[Telegram Bot API]
-        SC[Scheduled Cron] -->|periodic| FnC[Fetch & Distribute]
-        FnC -->|store/retrieve| KV[(KV Namespace: VPN_CACHE)]
-        FnC -->|test| Test[Config Tester]
-        FnC -->|send| TG
+        Entry[worker.js] --> Bot[handlers/bot.js]
+        Entry --> DashAPI[handlers/dashboard.js]
+        Entry --> PublicAPI[worker.js Logic]
 
-        SUB[Submission Handler] -->|store| KV
-        SUB -->|approve| Publish[Publish to Channels]
+        Bot --> Formatter[handlers/formatter.js]
+        DashAPI --> Formatter
 
-        AdminAPI[Dashboard API] -->|CRUD| KV
-        AdminAPI -->|triggers| FnC
-        AdminAPI -->|triggers| Cleanup[Cleanup Job]
+        Bot --> Services[services/*.js]
+        DashAPI --> Services
 
-        DashUI[Dashboard HTML] -->|fetches| AdminAPI
+        Services --> Utils[utils/*.js]
+        Utils --> KV[(KV: VPN_CACHE)]
 
-        Root[Root Path] -->|Logic| HTTPResponse[Redirect/Portfolio]
+        SC[Scheduled Cron] --> Fetcher[services/fetcher.js]
     end
 
     subgraph "External Systems"
-        Sources[Source URLs] -->|HTTP GET| FnC
-        User[Telegram User] -->|commands/configs| WH
-        Channel[Telegram Channel] <--|formatted configs| TG
-        Admin[Admin] -->|web dashboard| DashUI
+        TG[Telegram Bot API] <--> Bot
+        Sources[Source URLs] --> Fetcher
+        Admin[Admin Browser] <--> DashAPI
     end
-
-    KV -->|local cache| MemCache[In-Memory Cache (5s TTL)]
-    Test -->|DNS check| CF_DNS[Cloudflare DoH]
-    Test -->|TCP/HTTPS check| Target[VPN Server]
 ```
 
 ---
