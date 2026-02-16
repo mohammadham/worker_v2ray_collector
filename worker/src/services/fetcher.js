@@ -17,6 +17,9 @@ export async function checkAndDistribute(env) {
   let cache = await kvGet(env, "configs_cache", []);
   const allNew = [];
 
+  const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
+  const fallbackProvider = settings.channelUsername || "VPN Config Bot";
+
   for (const link of links) {
     try {
       const resp = await fetch(link, {
@@ -29,8 +32,8 @@ export async function checkAndDistribute(env) {
       for (const config of configs) {
         const h = hashConfig(config);
         if (!cache.includes(h)) {
-          const sources = extractChannelSource(text, config);
-          allNew.push({ config, hash: h, sources });
+          const provider = extractChannelSource(text, config, fallbackProvider);
+          allNew.push({ config, hash: h, provider });
           cache.push(h);
         }
       }
@@ -40,7 +43,6 @@ export async function checkAndDistribute(env) {
   if (cache.length > 500) cache = cache.slice(-500);
   await kvSet(env, "configs_cache", cache);
 
-  const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
   let sentCount = 0;
   let invalidCount = 0;
 
@@ -63,7 +65,7 @@ export async function checkAndDistribute(env) {
       config: item.config,
       hash: item.hash,
       type,
-      sources: item.sources,
+      provider: item.provider,
       test_result: testResult,
       country: testResult.country,
       countryCode: testResult.countryCode,

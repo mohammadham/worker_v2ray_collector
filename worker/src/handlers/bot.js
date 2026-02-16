@@ -67,13 +67,16 @@ export async function handleWebhook(env, update) {
 
   if (!text) return;
 
+  const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
+  const fallbackProvider = settings.channelUsername || "VPN Config Bot";
+
   const userState = await kvGet(env, `user_state_${chatId}`);
   if (userState === "awaiting_config") {
     await kvSet(env, `user_state_${chatId}`, null);
     const configs = extractConfigs(text);
     if (configs.length > 0) {
       const subs = await kvGet(env, "submissions", []);
-      const sources = extractChannelSource(text, configs[0]);
+      const provider = extractChannelSource(text, configs[0], fallbackProvider);
 
       subs.push({
         id: Math.random().toString(36).substring(2, 10),
@@ -81,12 +84,12 @@ export async function handleWebhook(env, update) {
         submitted_by: chatId,
         username: message.from?.username || "unknown",
         status: "pending",
-        sources: sources,
+        provider: provider,
         created_at: new Date().toISOString()
       });
 
       await kvSet(env, "submissions", subs);
-      await sendTelegram(env, chatId, `✅ ${configs.length} config(s) submitted!\nSources: ${sources.join(', ') || 'Unknown'}`);
+      await sendTelegram(env, chatId, `✅ ${configs.length} config(s) submitted!\nSource: ${provider}`);
     } else {
       await sendTelegram(env, chatId, "❌ No valid config found. Supported: vless://, vmess://, trojan://, ss://");
     }
@@ -280,7 +283,7 @@ export async function handleCallback(env, callback) {
       for (const s of pending) {
         const id = s.id || hashConfig(s.configs?.[0] || "");
         const configsPreview = (s.configs || []).slice(0, 3).map(c => `\`${c.substring(0, 50)}...\``).join("\n");
-        await sendTelegram(env, chatId, `📤 From @${s.username}\n📦 Total: ${s.configs?.length || 0} configs\nSources: ${(s.sources || []).join(', ') || 'Unknown'}\n\n${configsPreview}`, {
+        await sendTelegram(env, chatId, `📤 From @${s.username}\n📦 Total: ${s.configs?.length || 0} configs\nSource: ${s.provider || 'Unknown'}\n\n${configsPreview}`, {
           inline_keyboard: [[
             { text: "✅ Approve", callback_data: `approve_${id}` },
             { text: "❌ Reject", callback_data: `reject_${id}` }
@@ -320,7 +323,7 @@ export async function handleCallback(env, callback) {
         const currentStored = await kvGet(env, bucketKey, []);
 
         const newEntry = {
-          config: cfg, hash: h, type, sources: sub.sources,
+          config: cfg, hash: h, type, provider: sub.provider,
           test_result: testResult,
           country: testResult.country,
           countryCode: testResult.countryCode,

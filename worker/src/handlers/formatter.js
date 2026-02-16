@@ -21,7 +21,22 @@ export async function formatMessage(env, config, testResult, votes = null, chann
   const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
   const templates = await kvGet(env, "message_templates", DEFAULT_TEMPLATES);
 
-  const channel = channelInfo || "VPN Config Bot";
+  let channel = "VPN Config Bot";
+
+  if (config && config.provider) {
+    channel = config.provider;
+  } else if (channelInfo) {
+    channel = String(channelInfo);
+    // If numeric channel ID matches env.CHANNEL_ID, use channelUsername
+    if (channel === env.CHANNEL_ID && settings.channelUsername) {
+      channel = settings.channelUsername;
+    }
+  }
+
+  if (channel.startsWith("@")) channel = channel.substring(1);
+  if (!channel.startsWith("https://t.me/") && !/^[\d-]+$/.test(channel)) {
+    channel = "@" + channel;
+  }
 
   // Handle bundle case
   if (bundleConfigs && Array.isArray(bundleConfigs)) {

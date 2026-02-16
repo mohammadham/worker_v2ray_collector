@@ -123,15 +123,17 @@ export function extractServer(config) {
   return { host: null, port: null, remark: "" };
 }
 
-export function extractChannelSource(text, config) {
+export function extractChannelSource(text, config, fallback = "") {
   const patterns = [
-    /#(\w+)/g,
-    /@(\w+)/g,
-    /t\.me\/(\w+)/g,
-    /channel[:\s]+(\w+)/gi
+    /t\.me\/([\w+]{4,})/g,
+    /@([\w+]{4,})/g,
+    /#([\w+]{4,})/g,
+    /channel[:\s]+([\w+]{4,})/gi
   ];
 
   const sources = [];
+
+  // 1. Try to extract from text first
   for (const pattern of patterns) {
     let match;
     while ((match = pattern.exec(text)) !== null) {
@@ -139,22 +141,35 @@ export function extractChannelSource(text, config) {
     }
   }
 
+  // 2. Try to extract from config itself (remark/ps)
   try {
     const type = detectType(config);
+    let remark = "";
     if (type === "vmess") {
-      const b64 = config.replace("vmess://", "");
+      const b64 = config.replace("vmess://", "").trim();
       const data = JSON.parse(atob(b64));
-      if (data.ps) sources.push(data.ps);
+      remark = data.ps || "";
     } else {
       const hashPart = config.split("#")[1];
-      if (hashPart) {
-        const decoded = decodeURIComponent(hashPart);
-        sources.push(decoded);
+      if (hashPart) remark = decodeURIComponent(hashPart);
+    }
+
+    if (remark) {
+      // Check if remark is just a username or contains one
+      const cleanRemark = remark.replace(/^[@#]/, "").trim();
+      if (/^[\w+]{4,}$/.test(cleanRemark)) {
+        sources.push(cleanRemark);
+      } else {
+        for (const pattern of patterns) {
+          const m = cleanRemark.match(pattern);
+          if (m) m.forEach(found => sources.push(found.replace(/[#@]/g, "").replace("t.me/", "")));
+        }
       }
     }
   } catch {}
 
-  return [...new Set(sources)].slice(0, 3);
+  const uniqueSources = [...new Set(sources.map(s => s.replace(/^[@#]/, "")))];
+  return uniqueSources.length > 0 ? uniqueSources[0] : fallback;
 }
 
 export async function fetchWithTimeout(url, options = {}, timeout = 5000) {

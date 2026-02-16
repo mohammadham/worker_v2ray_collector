@@ -226,7 +226,7 @@ export async function handleDashboardAPI(env, request, path) {
         const testResult = await testConfig(cfg);
         const currentStored = await kvGet(env, bucketKey, []);
         const newEntry = {
-          config: cfg, hash: h, type, sources: sub.sources,
+          config: cfg, hash: h, type, provider: sub.provider,
           test_result: testResult,
           country: testResult.country,
           countryCode: testResult.countryCode,
