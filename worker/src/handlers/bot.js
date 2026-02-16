@@ -1,4 +1,4 @@
-import { kvGet, kvSet, kvDelete } from '../utils/kv.js';
+import { kvGet, kvSet, kvDelete, trackUser } from '../utils/kv.js';
 import { sendTelegram, answerCallback, telegramApi } from '../utils/telegram.js';
 import {
   extractConfigs, detectType, hashConfig, extractServer,
@@ -8,6 +8,7 @@ import { voteConfig, calculateQualityScore } from '../services/voting.js';
 import { manageStorage, cleanupConfigs, incrementUserStats, updateCountryIndex } from '../services/storage.js';
 import { pushToQueue } from '../services/queue.js';
 import { checkAndDistribute } from '../services/fetcher.js';
+import { startBroadcast } from '../services/broadcast.js';
 import { formatMessage, configKeyboard } from './formatter.js';
 import { DEFAULT_TEMPLATES, DEFAULT_SETTINGS } from '../constants.js';
 
@@ -66,6 +67,9 @@ export async function handleWebhook(env, update) {
   const isAdmin = chatId === env.ADMIN_CHAT_ID;
 
   if (!text) return;
+
+  // Track new users
+  await trackUser(env, chatId);
 
   const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
   const fallbackProvider = settings.channelUsername || "VPN Config Bot";
@@ -165,6 +169,13 @@ export async function handleWebhook(env, update) {
     const subs = await kvGet(env, "submissions", []);
     const pending = subs.filter(s => s.status === "pending").length;
     await sendTelegram(env, chatId, `📊 *Status*\n\nLinks: ${links.length}\nChannels: ${channels.length}\nCache: ${cache.length}\nConfigs: ${stored.length}\nPending: ${pending}`);
+  } else if (text.startsWith("/broadcast ") && isAdmin) {
+    const msg = text.replace("/broadcast ", "").trim();
+    if (msg) {
+      await sendTelegram(env, chatId, "🚀 Starting broadcast...");
+      const stats = await startBroadcast(env, msg);
+      await sendTelegram(env, chatId, `✅ Broadcast complete!\nSent: ${stats.sent}\nFailed: ${stats.failed}`);
+    }
   }
 }
 
@@ -174,6 +185,7 @@ export async function handleCallback(env, callback) {
   const isAdmin = chatId === env.ADMIN_CHAT_ID;
   const userId = callback.from.id;
 
+  await trackUser(env, userId);
   await answerCallback(env, callback.id, "Processing...");
 
   if (data.startsWith("like_") || data.startsWith("dislike_")) {

@@ -8,6 +8,7 @@ import {
 } from '../services/storage.js';
 import { checkAndDistribute } from '../services/fetcher.js';
 import { pushToQueue } from '../services/queue.js';
+import { startBroadcast } from '../services/broadcast.js';
 import { formatMessage } from './formatter.js';
 import { DEFAULT_SETTINGS, DEFAULT_TEMPLATES } from '../constants.js';
 import { sendTelegram } from '../utils/telegram.js';
@@ -281,6 +282,28 @@ export async function handleDashboardAPI(env, request, path) {
     const info = { version, description, link, force: !!force, updated_at: new Date().toISOString() };
     await kvSet(env, "app_update_info", info);
     return jsonResp({ info });
+  }
+
+  // Announcements
+  if (path === "/announcements" && method === "GET") {
+    const announcement = await kvGet(env, "app_announcement", { title: "", message: "", active: false });
+    return jsonResp({ announcement });
+  }
+  if (path === "/announcements" && method === "POST") {
+    const { title, message, active } = await request.json();
+    const announcement = { title, message, active: !!active, updated_at: new Date().toISOString() };
+    await kvSet(env, "app_announcement", announcement);
+    return jsonResp({ announcement });
+  }
+
+  // Broadcast
+  if (path === "/broadcast" && method === "POST") {
+    const { message } = await request.json();
+    if (!message) return jsonResp({ error: "Message required" }, 400);
+
+    // We run it as background task if possible, but for simplicity we'll trigger it
+    const stats = await startBroadcast(env, message);
+    return jsonResp({ status: "completed", stats });
   }
 
   // Fetch Now

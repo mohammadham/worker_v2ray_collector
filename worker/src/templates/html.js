@@ -86,6 +86,8 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 <div class="tab" onclick="showTab('submissions')">👥 Submissions</div>
 <div class="tab" onclick="showTab('settings')">⚙️ Settings</div>
 <div class="tab" onclick="showTab('app-update')">📱 App Update</div>
+<div class="tab" onclick="showTab('announcements')">📢 Announcements</div>
+<div class="tab" onclick="showTab('broadcast')">✉️ Broadcast</div>
 <div class="tab" onclick="showTab('actions')">⚡ Actions</div>
 </div>
 <div id="links" class="section active glass">
@@ -137,6 +139,26 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 </label>
 <input id="redirect-url" placeholder="https://example.com" style="margin-bottom:12px">
 <button class="btn-sm" onclick="saveRedirectSettings()">Save Redirect Settings</button>
+</div>
+</div>
+<div id="announcements" class="section glass">
+<div style="max-width:600px;margin:0 auto">
+<h3 style="color:#00d4ff;margin-bottom:20px">In-App Announcements</h3>
+<div class="settings-item"><label>Title</label><input id="ann-title"></div>
+<div class="settings-item"><label>Message Content</label><textarea id="ann-message" style="height:120px"></textarea></div>
+<label style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+<input type="checkbox" id="ann-active" style="width:auto"> Active (Visible in app)
+</label>
+<button class="btn-primary" onclick="saveAnnouncement()">Save Announcement</button>
+</div>
+</div>
+<div id="broadcast" class="section glass">
+<div style="max-width:600px;margin:0 auto;text-align:center">
+<h3 style="color:#00d4ff;margin-bottom:20px">Broadcast Message to All Bot Users</h3>
+<p style="color:#888;margin-bottom:20px;font-size:13px">This message will be sent to every user who has ever started the bot. This process may take time due to rate limiting.</p>
+<textarea id="broadcast-message" placeholder="Type your message here (Markdown supported)..." style="height:200px"></textarea>
+<button class="btn-primary" onclick="sendBroadcast()" style="background:linear-gradient(135deg,#ff9a9e,#fecfef);color:#000">🚀 Start Broadcast</button>
+<div id="broadcast-status" style="margin-top:20px"></div>
 </div>
 </div>
 <div id="app-update" class="section glass">
@@ -219,7 +241,8 @@ async function showDashboard(){
     showLoading();
     await Promise.all([
       loadStats(), loadLinks(), loadChannels(), loadConfigs(),
-      loadTemplates(), loadSubmissions(), loadSettings(), loadAppUpdate()
+      loadTemplates(), loadSubmissions(), loadSettings(), loadAppUpdate(),
+      loadAnnouncements()
     ]);
     hideLoading();
   } catch (e) {
@@ -372,6 +395,35 @@ async function saveAppUpdate(){
   };
   await api("/app-update","POST",body);
   alert("App update info saved!");
+}
+async function loadAnnouncements(){
+  const d=await api("/announcements");
+  if(d.announcement){
+    document.getElementById("ann-title").value=d.announcement.title||"";
+    document.getElementById("ann-message").value=d.announcement.message||"";
+    document.getElementById("ann-active").checked=d.announcement.active||false;
+  }
+}
+async function saveAnnouncement(){
+  const body={
+    title:document.getElementById("ann-title").value,
+    message:document.getElementById("ann-message").value,
+    active:document.getElementById("ann-active").checked
+  };
+  await api("/announcements","POST",body);
+  alert("Announcement saved!");
+}
+async function sendBroadcast(){
+  const msg=document.getElementById("broadcast-message").value;
+  if(!msg || !confirm("Are you sure you want to send this message to ALL users?")) return;
+  document.getElementById("broadcast-status").innerHTML="<p>Broadcast in progress... Please wait.</p>";
+  try {
+    const d=await api("/broadcast","POST",{message:msg});
+    document.getElementById("broadcast-status").innerHTML="<p style='color:#0f0'>✅ Broadcast Completed!</p><p>Sent: "+d.stats.sent+" | Failed: "+d.stats.failed+"</p>";
+    document.getElementById("broadcast-message").value="";
+  } catch(e) {
+    document.getElementById("broadcast-status").innerHTML="<p style='color:#f00'>❌ Error: "+e.message+"</p>";
+  }
 }
 async function fetchNow(){
   document.getElementById("action-result").innerHTML="<p>Fetching...</p>";

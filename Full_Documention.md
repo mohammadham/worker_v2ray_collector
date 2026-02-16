@@ -204,6 +204,10 @@ The bot provides a REST API for management and integration. All dashboard endpoi
 - **GET `/dashboard/api/app-update`**: Fetch current Android app update info.
 - **POST `/dashboard/api/app-update`**: Update Android app release info.
   - Body: `{"version": "1.2.0", "description": "New features", "link": "https://...", "force": true}`
+- **POST `/dashboard/api/announcements`**: Update app announcements.
+  - Body: `{"title": "...", "message": "...", "active": true}`
+- **POST `/dashboard/api/broadcast`**: Send a message to all Telegram bot users.
+  - Body: `{"message": "..."}`
 
 ### Public Endpoints (No Auth)
 
@@ -249,6 +253,18 @@ The bot provides a REST API for management and integration. All dashboard endpoi
       "description": "Bug fixes and performance improvements",
       "link": "https://example.com/app.apk",
       "force": false,
+      "updated_at": "2024-03-20T12:00:00.000Z"
+    }
+    ```
+
+- **GET `/api/announcements`**
+  - Returns the current active app announcement.
+  - Example Response:
+    ```json
+    {
+      "title": "New Server added!",
+      "message": "We have added 5 new servers in Germany. Enjoy!",
+      "active": true,
       "updated_at": "2024-03-20T12:00:00.000Z"
     }
     ```

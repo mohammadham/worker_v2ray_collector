@@ -236,6 +236,12 @@ export default {
       return jsonResp(info);
     }
 
+    // App Announcement API (Public)
+    if (url.pathname === "/api/announcements" && request.method === "GET") {
+      const announcement = await kvGet(env, "app_announcement", { title: "", message: "", active: false });
+      return jsonResp(announcement);
+    }
+
     // Usage Reporting API
     if (url.pathname === "/api/user-sub/report" && request.method === "POST") {
       const { code, volumeMB, activate } = await request.json();
