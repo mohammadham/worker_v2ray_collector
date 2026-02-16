@@ -1,8 +1,8 @@
 import { kvGet, kvSet, kvDelete } from '../utils/kv.js';
 import {
-  hashConfig, detectType, extractServer, testConfig
+  hashConfig, detectType, extractServer, testConfig, ALL_BUCKETS, getBucket
 } from '../utils/vpn.js';
-import { getConfigVotes, voteConfig, calculateQualityScore } from '../services/voting.js';
+import { voteConfig, calculateQualityScore } from '../services/voting.js';
 import {
   manageStorage, cleanupConfigs, incrementUserStats
 } from '../services/storage.js';
@@ -12,28 +12,28 @@ import { formatMessage } from './formatter.js';
 import { DEFAULT_SETTINGS, DEFAULT_TEMPLATES } from '../constants.js';
 import { sendTelegram } from '../utils/telegram.js';
 
+async function getAllStoredConfigs(env) {
+  const all = [];
+  for (const bucketKey of ALL_BUCKETS) {
+    const list = await kvGet(env, bucketKey, []);
+    all.push(...list);
+  }
+  return all;
+}
+
 // ======== Dashboard API - COMPLETE VERSION ========
 export async function handleDashboardAPI(env, request, path) {
   const url = new URL(request.url);
   const method = request.method;
-
-  // Normalize path
   const normalizedPath = path.endsWith("/") ? path.slice(0, -1) : path;
 
-  // Login - API موجود قبلی
+  // Login
   if (normalizedPath === "/login" && method === "POST") {
     let credentials;
-    try {
-      credentials = await request.json();
-    } catch (e) {
-      return jsonResp({ error: "Invalid request body" }, 400);
-    }
+    try { credentials = await request.json(); } catch (e) { return jsonResp({ error: "Invalid request body" }, 400); }
     const { username, password } = credentials;
-
-    // Safety check for unset credentials
     const validUser = env.DASHBOARD_USER || "";
     const validPass = env.DASHBOARD_PASS || "";
-
     if (username === validUser && password === validPass) {
       const token = btoa(JSON.stringify({ sub: username, exp: Date.now() + 86400000, salt: Math.random() }));
       return jsonResp({ token, username });
@@ -52,7 +52,7 @@ export async function handleDashboardAPI(env, request, path) {
 
   // Stats
   if (path === "/stats") {
-    const stored = await kvGet(env, "stored_configs", []);
+    const stored = await getAllStoredConfigs(env);
     const links = await kvGet(env, "source_links", []);
     const channels = await kvGet(env, "channel_ids", []);
     const subs = await kvGet(env, "submissions", []);
@@ -60,8 +60,7 @@ export async function handleDashboardAPI(env, request, path) {
 
     let totalVotes = 0;
     for (const c of stored) {
-      const votes = await getConfigVotes(env, c.hash);
-      totalVotes += votes.likes.length + votes.dislikes.length;
+      totalVotes += (c.likes_count || 0) + (c.dislikes_count || 0);
     }
 
     return jsonResp({
@@ -107,18 +106,13 @@ export async function handleDashboardAPI(env, request, path) {
     return jsonResp({ channels });
   }
 
-  // Configs
+  // Configs (with Pagination & Sorting)
   if (path === "/configs" && method === "GET") {
     const sortBy = url.searchParams.get("sort") || "newest";
     const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit")) || 20, 10), 100);
     const page = Math.max(parseInt(url.searchParams.get("page")) || 1, 1);
 
-    let stored = await kvGet(env, "stored_configs", []);
-
-    stored = await Promise.all(stored.map(async c => ({
-      ...c,
-      votes: await getConfigVotes(env, c.hash)
-    })));
+    let stored = await getAllStoredConfigs(env);
 
     switch(sortBy) {
       case "best":
@@ -132,6 +126,7 @@ export async function handleDashboardAPI(env, request, path) {
         break;
       case "newest":
       default:
+        stored.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
         break;
     }
 
@@ -145,14 +140,14 @@ export async function handleDashboardAPI(env, request, path) {
   // Delete Config
   if (path.startsWith("/configs/") && method === "DELETE") {
     const hash = path.replace("/configs/", "");
-    let stored = await kvGet(env, "stored_configs", []);
-    const config = stored.find(c => c.hash === hash);
-
-    if (config) {
-      stored = stored.filter(c => c.hash !== hash);
-      await kvSet(env, "stored_configs", stored);
-      await kvDelete(env, `votes_${hash}`);
-      return jsonResp({ deleted: true, hash });
+    for (const bucketKey of ALL_BUCKETS) {
+      let list = await kvGet(env, bucketKey, []);
+      const idx = list.findIndex(c => c.hash === hash);
+      if (idx !== -1) {
+        list.splice(idx, 1);
+        await kvSet(env, bucketKey, list);
+        return jsonResp({ deleted: true, hash });
+      }
     }
     return jsonResp({ error: "Not found" }, 404);
   }
@@ -166,14 +161,14 @@ export async function handleDashboardAPI(env, request, path) {
       const results = [];
       for (const item of body.votes) {
         if (item.hash && item.type) {
-          const v = await voteConfig(env, item.hash, userId, item.type);
+          const v = await voteConfig(env, item.hash, userId, item.type, item.config_type);
           results.push({ hash: item.hash, votes: v });
         }
       }
       return jsonResp({ results });
     } else {
-      const { config_hash, vote } = body;
-      const votes = await voteConfig(env, config_hash, userId, vote);
+      const { config_hash, vote, config_type } = body;
+      const votes = await voteConfig(env, config_hash, userId, vote, config_type);
       return jsonResp({ votes });
     }
   }
@@ -223,21 +218,24 @@ export async function handleDashboardAPI(env, request, path) {
       await kvSet(env, "submissions", subs);
       await incrementUserStats(env, sub.submitted_by, sub.configs?.length || 1);
 
-      let currentStored = await kvGet(env, "stored_configs", []);
+      // Add to buckets
       for (const cfg of (sub.configs || [])) {
         const h = hashConfig(cfg);
+        const type = detectType(cfg);
+        const bucketKey = getBucket(type, h);
         const testResult = await testConfig(cfg);
-        const votes = await getConfigVotes(env, h);
+        const currentStored = await kvGet(env, bucketKey, []);
         const newEntry = {
-          config: cfg, hash: h, type: detectType(cfg), sources: sub.sources,
+          config: cfg, hash: h, type, sources: sub.sources,
           test_result: testResult, created_at: new Date().toISOString(),
-          failed_tests: testResult.status === "dead" ? 1 : 0, ...extractServer(cfg)
+          failed_tests: testResult.status === "dead" ? 1 : 0,
+          likes_count: 0, dislikes_count: 0, vote_score: 0, recent_voters: [],
+          ...extractServer(cfg)
         };
-        newEntry.quality_score = calculateQualityScore(newEntry, votes);
-        currentStored.unshift(newEntry);
+        newEntry.quality_score = calculateQualityScore(newEntry);
+        const cleaned = await manageStorage(env, [newEntry, ...currentStored], bucketKey);
+        await kvSet(env, bucketKey, cleaned);
       }
-      const cleaned = await manageStorage(env, 0, currentStored);
-      await kvSet(env, "stored_configs", cleaned.slice(0, 1000));
 
       return jsonResp({ status: "approved" });
     }
@@ -259,13 +257,8 @@ export async function handleDashboardAPI(env, request, path) {
   if (path === "/settings" && method === "POST") {
     const { key, value } = await request.json();
     const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
-
-    if (key === "all") {
-      Object.assign(settings, value);
-    } else {
-      settings[key] = value;
-    }
-
+    if (key === "all") Object.assign(settings, value);
+    else settings[key] = value;
     await kvSet(env, "bot_settings", settings);
     return jsonResp({ settings });
   }
@@ -282,32 +275,31 @@ export async function handleDashboardAPI(env, request, path) {
     return jsonResp(result);
   }
 
-  // Retest All
+  // Retest All (Sequential Bucket processing)
   if (path === "/retest-all" && method === "POST") {
-    const stored = await kvGet(env, "stored_configs", []);
-    const limit = 5;
+    let totalTested = 0;
+    for (const bucketKey of ALL_BUCKETS) {
+      const stored = await kvGet(env, bucketKey, []);
+      if (!stored.length) continue;
 
-    const results = [];
-    for (let i = 0; i < stored.length; i += limit) {
-      const batch = stored.slice(i, i + limit);
-      const batchResults = await Promise.all(batch.map(async (config) => {
-        const testResult = await testConfig(config.config);
-        config.test_result = testResult;
-        if (testResult.status === "dead") {
-          config.failed_tests = (config.failed_tests || 0) + 1;
-        } else {
-          config.failed_tests = 0;
-        }
-        const votes = await getConfigVotes(env, config.hash);
-        config.quality_score = calculateQualityScore(config, votes);
-        return config;
-      }));
-      results.push(...batchResults);
-      await new Promise(r => setTimeout(r, 100));
+      const limit = 5;
+      const results = [];
+      for (let i = 0; i < stored.length; i += limit) {
+        const batch = stored.slice(i, i + limit);
+        const batchResults = await Promise.all(batch.map(async (config) => {
+          const testResult = await testConfig(config.config);
+          config.test_result = testResult;
+          if (testResult.status === "dead") config.failed_tests = (config.failed_tests || 0) + 1;
+          else config.failed_tests = 0;
+          config.quality_score = calculateQualityScore(config);
+          return config;
+        }));
+        results.push(...batchResults);
+      }
+      await kvSet(env, bucketKey, results);
+      totalTested += results.length;
     }
-
-    await kvSet(env, "stored_configs", results);
-    return jsonResp({ tested: results.length });
+    return jsonResp({ tested: totalTested });
   }
 
   // Test

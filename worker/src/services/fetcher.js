@@ -2,9 +2,9 @@ import { kvGet, kvSet } from '../utils/kv.js';
 import { sendTelegram } from '../utils/telegram.js';
 import {
   extractConfigs, hashConfig, extractChannelSource, testConfig,
-  detectType, extractServer
+  detectType, extractServer, getBucket
 } from '../utils/vpn.js';
-import { getConfigVotes, calculateQualityScore } from './voting.js';
+import { calculateQualityScore } from './voting.js';
 import { manageStorage } from './storage.js';
 import { pushToQueue } from './queue.js';
 import { formatMessage, configKeyboard } from '../handlers/formatter.js';
@@ -41,41 +41,48 @@ export async function checkAndDistribute(env) {
   await kvSet(env, "configs_cache", cache);
 
   const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
-  const newConfigsToStore = [];
   let sentCount = 0;
   let invalidCount = 0;
 
-  // Limit processing to 12 new configs per run to avoid Free Tier subrequest limits (50)
-  for (const item of allNew.slice(0, 12)) {
-    const testResult = await testConfig(item.config);
+  // Group new items by bucket
+  const bucketGroups = {};
+  const processedItems = allNew.slice(0, 12);
 
-    // Strict Filtering: Only Active and Latency < 10,000ms
+  for (const item of processedItems) {
+    const type = detectType(item.config);
+    const bucketKey = getBucket(type, item.hash);
+    if (!bucketGroups[bucketKey]) bucketGroups[bucketKey] = [];
+
+    const testResult = await testConfig(item.config);
     if (testResult.status !== "active" || testResult.latency >= 10000 || testResult.latency < 0) {
       invalidCount++;
       continue;
     }
 
-    const votes = await getConfigVotes(env, item.hash);
-
     const configObj = {
       config: item.config,
       hash: item.hash,
-      type: detectType(item.config),
+      type,
       sources: item.sources,
       test_result: testResult,
       created_at: new Date().toISOString(),
       failed_tests: 0,
+      likes_count: 0,
+      dislikes_count: 0,
+      vote_score: 0,
+      recent_voters: [],
       ...extractServer(item.config)
     };
-    configObj.quality_score = calculateQualityScore(configObj, votes);
-    newConfigsToStore.push(configObj);
+    configObj.quality_score = calculateQualityScore(configObj);
+    bucketGroups[bucketKey].push(configObj);
 
+    // Distribution
     if (settings.enableQueue) {
       await pushToQueue(env, { type: "single", config: item.config, hash: item.hash, testResult });
     } else {
       for (const channel of channels) {
         try {
-          const msg = await formatMessage(env, item.config, testResult, votes, channel);
+          const msg = await formatMessage(env, item.config, testResult, null, channel);
           const keyboard = configKeyboard(item.config, item.hash, channel);
           await sendTelegram(env, channel, msg, keyboard);
           await new Promise(r => setTimeout(r, 500));
@@ -85,14 +92,16 @@ export async function checkAndDistribute(env) {
     sentCount++;
   }
 
-  if (newConfigsToStore.length > 0) {
-    const cleanedStored = await manageStorage(env, newConfigsToStore.length);
-    const finalConfigs = [...newConfigsToStore, ...cleanedStored];
-    await kvSet(env, "stored_configs", finalConfigs.slice(0, 1000));
+  // Save each bucket
+  for (const [bucketKey, newItems] of Object.entries(bucketGroups)) {
+    if (newItems.length === 0) continue;
+    const currentStored = await kvGet(env, bucketKey, []);
+    const final = await manageStorage(env, [...newItems, ...currentStored], bucketKey);
+    await kvSet(env, bucketKey, final);
   }
 
-  const summary = `✅ Summary:\n- Distributed: ${sentCount}\n- Skipped (Invalid): ${invalidCount}\n- Total Scanned: ${Math.min(allNew.length, 12)}`;
+  const summary = `✅ Summary:\n- Distributed: ${sentCount}\n- Skipped (Invalid): ${invalidCount}\n- Total Scanned: ${processedItems.length}`;
   await sendTelegram(env, env.ADMIN_CHAT_ID, summary);
 
-  return { new_configs: sentCount, invalid: invalidCount, total: allNew.length };
+  return { new_configs: sentCount, invalid: invalidCount, total: processedItems.length };
 }

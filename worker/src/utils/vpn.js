@@ -253,3 +253,22 @@ export async function testConfig(config) {
   result.message = result.tcp ? `Online - ${result.latency}ms` : result.dns ? "DNS OK, TCP failed" : "Offline";
   return result;
 }
+
+export function getBucket(type, hash) {
+  const firstChar = String(hash || "").charAt(0).toLowerCase();
+  let group = 1;
+
+  if ("0123456".includes(firstChar)) group = 1;
+  else if ("789abcd".includes(firstChar)) group = 2;
+  else if ("efghijk".includes(firstChar)) group = 3;
+  else if ("lmnopqr".includes(firstChar)) group = 4;
+  else if ("stuvwxyz".includes(firstChar)) group = 5;
+  else group = 1; // Default
+
+  return `cfgs:${type}:${group}`;
+}
+
+export const ALL_BUCKETS = [];
+['vless', 'vmess', 'trojan', 'ss'].forEach(t => {
+  for (let i = 1; i <= 5; i++) ALL_BUCKETS.push(`cfgs:${t}:${i}`);
+});

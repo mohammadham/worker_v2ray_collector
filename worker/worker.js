@@ -6,9 +6,49 @@ import { checkAndDistribute } from './src/services/fetcher.js';
 import { cleanupConfigs } from './src/services/storage.js';
 import { processQueue } from './src/services/queue.js';
 import { telegramApi } from './src/utils/telegram.js';
+import { hashConfig, detectType, getBucket } from './src/utils/vpn.js';
+import { calculateQualityScore } from './src/services/voting.js';
 import {
   DEFAULT_TEMPLATES, DEFAULT_SETTINGS
 } from './src/constants.js';
+
+async function migrateData(env) {
+  const oldStored = await env.VPN_CACHE.get("stored_configs", "json");
+  if (oldStored && Array.isArray(oldStored)) {
+    console.log(`Migrating ${oldStored.length} configs to sharded storage...`);
+
+    // Group configs by bucket first to minimize KV writes
+    const groups = {};
+    for (const cfg of oldStored) {
+      const h = cfg.hash || hashConfig(cfg.config);
+      const type = cfg.type || detectType(cfg.config);
+      const bucket = getBucket(type, h);
+      if (!groups[bucket]) groups[bucket] = [];
+
+      // Try to fetch old votes (Note: this might be slow, but it's a one-time migration)
+      const oldVotes = await env.VPN_CACHE.get(`votes_${h}`, "json");
+      if (oldVotes) {
+        cfg.likes_count = (oldVotes.likes || []).length;
+        cfg.dislikes_count = (oldVotes.dislikes || []).length;
+        cfg.recent_voters = [
+          ...(oldVotes.likes || []).slice(-10).map(id => ({ id, type: 'like' })),
+          ...(oldVotes.dislikes || []).slice(-10).map(id => ({ id, type: 'dislike' }))
+        ].slice(-20);
+      }
+      cfg.quality_score = calculateQualityScore(cfg);
+      groups[bucket].push(cfg);
+    }
+
+    for (const [bucket, configs] of Object.entries(groups)) {
+      const current = await kvGet(env, bucket, []);
+      const merged = [...configs, ...current].slice(0, 100);
+      await kvSet(env, bucket, merged);
+    }
+
+    await env.VPN_CACHE.delete("stored_configs");
+    console.log("Migration complete.");
+  }
+}
 
 export default {
   async fetch(request, env) {
@@ -22,17 +62,22 @@ export default {
       }});
     }
 
-    // Init defaults on first request
-    const initialized = await kvGet(env, "_initialized");
+    // Migration and Init
+    const initialized = await kvGet(env, "_sharded_init");
     if (!initialized) {
-      await kvSet(env, "source_links", ["https://raw.githubusercontent.com/arshiacomplus/v2rayExtractor/refs/heads/main/mix/sub.html"]);
-      await kvSet(env, "channel_ids", [env.CHANNEL_ID]);
-      await kvSet(env, "configs_cache", []);
-      await kvSet(env, "submissions", []);
-      await kvSet(env, "stored_configs", []);
-      await kvSet(env, "message_templates", DEFAULT_TEMPLATES);
-      await kvSet(env, "bot_settings", DEFAULT_SETTINGS);
-      await kvSet(env, "_initialized", true);
+      await migrateData(env);
+
+      const setupDone = await kvGet(env, "_initialized");
+      if (!setupDone) {
+        await kvSet(env, "source_links", ["https://raw.githubusercontent.com/arshiacomplus/v2rayExtractor/refs/heads/main/mix/sub.html"]);
+        await kvSet(env, "channel_ids", [env.CHANNEL_ID]);
+        await kvSet(env, "configs_cache", []);
+        await kvSet(env, "submissions", []);
+        await kvSet(env, "message_templates", DEFAULT_TEMPLATES);
+        await kvSet(env, "bot_settings", DEFAULT_SETTINGS);
+        await kvSet(env, "_initialized", true);
+      }
+      await kvSet(env, "_sharded_init", true);
     }
 
     // Webhook
@@ -53,15 +98,22 @@ export default {
       const minQuality = parseInt(url.searchParams.get("min_quality")) || 0;
       const sortBy = url.searchParams.get("sort") || "newest";
 
-      const stored = await kvGet(env, "stored_configs", []);
+      // Aggregate from all buckets
+      const { ALL_BUCKETS } = await import('./src/utils/vpn.js');
+      let filtered = [];
+      for (const bucketKey of ALL_BUCKETS) {
+        const list = await kvGet(env, bucketKey, []);
+        filtered.push(...list.filter(c => c.test_result?.status === "active" && (c.quality_score || 0) >= minQuality));
+      }
 
-      let filtered = stored.filter(c => c.test_result?.status === "active" && (c.quality_score || 0) >= minQuality);
       if (country) {
         filtered = filtered.filter(c => c.test_result?.countryCode === country);
       }
 
       if (sortBy === "best") {
         filtered.sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
+      } else {
+        filtered.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
       }
 
       const active = filtered.slice(0, limit);
@@ -81,16 +133,17 @@ export default {
       const minQuality = parseInt(url.searchParams.get("min_quality")) || 0;
       const sortBy = url.searchParams.get("sort") || "best";
 
-      const stored = await kvGet(env, "stored_configs", []);
-
-      let filtered = stored.filter(c => c.test_result?.status === "active" && (c.quality_score || 0) >= minQuality);
-      if (country) {
-        filtered = filtered.filter(c => c.test_result?.countryCode === country);
+      const { ALL_BUCKETS } = await import('./src/utils/vpn.js');
+      let filtered = [];
+      for (const bucketKey of ALL_BUCKETS) {
+        const list = await kvGet(env, bucketKey, []);
+        filtered.push(...list.filter(c => c.test_result?.status === "active" && (c.quality_score || 0) >= minQuality));
       }
 
-      if (sortBy === "best") {
-        filtered.sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
-      }
+      if (country) filtered = filtered.filter(c => c.test_result?.countryCode === country);
+
+      if (sortBy === "best") filtered.sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
+      else filtered.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
       const active = filtered.slice(0, limit);
       const subContent = btoa(active.map(c => c.config).join("\n"));
@@ -102,19 +155,17 @@ export default {
 
     // Countries List API
     if (url.pathname === "/api/countries") {
-      const stored = await kvGet(env, "stored_configs", []);
-      const active = stored.filter(c => c.test_result?.status === "active");
-
+      const { ALL_BUCKETS } = await import('./src/utils/vpn.js');
       const counts = {};
-      active.forEach(c => {
-        const code = c.test_result?.countryCode || "UN";
-        const name = c.test_result?.country || "Unknown";
-        if (!counts[code]) {
-          counts[code] = { country: name, countryCode: code, count: 0 };
-        }
-        counts[code].count++;
-      });
-
+      for (const bucketKey of ALL_BUCKETS) {
+        const list = await kvGet(env, bucketKey, []);
+        list.filter(c => c.test_result?.status === "active").forEach(c => {
+          const code = c.test_result?.countryCode || "UN";
+          const name = c.test_result?.country || "Unknown";
+          if (!counts[code]) counts[code] = { country: name, countryCode: code, count: 0 };
+          counts[code].count++;
+        });
+      }
       return jsonResp(Object.values(counts).sort((a, b) => b.count - a.count));
     }
 
@@ -183,11 +234,9 @@ export default {
     // Redirect/Template Logic
     if (url.pathname === "/" || url.pathname === "") {
       const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
-      
       if (settings.enableRedirect && settings.redirectUrl) {
         return Response.redirect(settings.redirectUrl, 302);
       }
-      
       return new Response(portfolioHTML(env), { 
         headers: { "Content-Type": "text/html;charset=UTF-8" } 
       });
