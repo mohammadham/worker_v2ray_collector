@@ -376,12 +376,12 @@ window.onload=function(){
   if(t){TOKEN=t;showDashboard();}
 };
 </script>
-</body></html>\`;
+</body></html>`;
 }
 
 // ======== Portfolio HTML - ویژگی جدید ========
 export function portfolioHTML(env) {
-  return \`<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -457,7 +457,7 @@ h1 { font-size: 3em; margin-bottom: 20px; background: linear-gradient(45deg, #00
 
 <div class="cta">
 <a href="/dashboard" class="btn">Access Dashboard</a>
-<a href="https://t.me/\${env.BOT_USERNAME || 'your_bot'}" class="btn">Open Telegram Bot</a>
+<a href="https://t.me/${env.BOT_USERNAME || 'your_bot'}" class="btn">Open Telegram Bot</a>
 </div>
 
 <div class="footer">
