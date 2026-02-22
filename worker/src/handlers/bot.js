@@ -2,7 +2,7 @@ import { kvGet, kvSet, kvDelete, trackUser } from '../utils/kv.js';
 import { sendTelegram, answerCallback, telegramApi } from '../utils/telegram.js';
 import {
   extractConfigs, detectType, hashConfig, extractServer,
-  extractChannelSource, testConfig, getBucket, ALL_BUCKETS
+  extractChannelSource, testConfig, getBucket, ALL_BUCKETS, getFlag
 } from '../utils/vpn.js';
 import { voteConfig, calculateQualityScore } from '../services/voting.js';
 import { manageStorage, cleanupConfigs, incrementUserStats, updateCountryIndex } from '../services/storage.js';
@@ -14,38 +14,47 @@ import { DEFAULT_TEMPLATES, DEFAULT_SETTINGS } from '../constants.js';
 
 // Menu Button Labels
 const BUTTONS = {
-  SUBMIT: "📤 Submit Config",
-  LATEST: "📋 Latest Configs",
+  // User Buttons
+  LATEST: "🚀 Latest Configs",
   BEST: "⭐ Best Rated",
+  SUBMIT: "📤 Submit Config",
   MY_SUB: "💎 My Subscription",
   STATS: "📊 Bot Stats",
   HELP: "ℹ️ Help",
+
+  // Admin Main
   ADMIN: "🔐 Admin Panel",
-  CHECK: "🔍 Check Now",
-  MANAGE_CONFIGS: "🔰 Manage Configs",
-  SETTINGS: "⚙️ Settings",
-  SUBMISSIONS: "👥 Submissions",
-  CLEANUP: "🧹 Cleanup",
-  BROADCAST: "📢 Broadcast",
-  BACK_USER: "🔙 Back to User Menu",
-  LINKS: "📋 Links",
-  CHANNELS: "📺 Channels",
-  TEMPLATES: "📝 Templates",
-  STATUS: "📊 Status",
-  APP_UPDATE: "📱 App Update",
-  ANNOUNCEMENTS: "📢 Announcements",
-  ADD_CONFIG: "➕ Add Config",
-  SUB_LIST: "🗑️ Manage Configs",
-  SUB_CLIENTS: "👥 Manage Clients",
-  SUB_STATS: "📊 Service Stats",
-  BACK: "🔙 Back"
+  CHECK: "🔍 Scrape Now",
+  MANAGE_CONFIGS: "🔰 Content Manager",
+  SETTINGS: "⚙️ System Settings",
+  SUBMISSIONS: "👥 Pending Reviews",
+  CLEANUP: "🧹 Storage Cleanup",
+  BROADCAST: "📢 Mass Broadcast",
+
+  // Admin Sub-Menus
+  LINKS: "🔗 Source Links",
+  CHANNELS: "📺 Distribution Channels",
+  TEMPLATES: "📝 Msg Templates",
+  STATUS: "📊 System Status",
+  APP_UPDATE: "📱 App Versions",
+  ANNOUNCEMENTS: "📢 Global News",
+
+  // Sub-Admin
+  ADD_CONFIG: "➕ Add Private Config",
+  SUB_LIST: "🗑️ Manage Private Pool",
+  SUB_CLIENTS: "👥 Manage My Clients",
+  SUB_STATS: "📊 My Usage Stats",
+
+  // Navigation
+  BACK: "🔙 Back",
+  BACK_USER: "🏠 Home (User Menu)"
 };
 
 const KEYBOARDS = {
   MAIN: (isAdmin) => {
     const rows = [
-      [{ text: BUTTONS.SUBMIT }, { text: BUTTONS.LATEST }],
-      [{ text: BUTTONS.BEST }, { text: BUTTONS.MY_SUB }],
+      [{ text: BUTTONS.LATEST }, { text: BUTTONS.BEST }],
+      [{ text: BUTTONS.SUBMIT }, { text: BUTTONS.MY_SUB }],
       [{ text: BUTTONS.STATS }, { text: BUTTONS.HELP }]
     ];
     if (isAdmin) rows.push([{ text: BUTTONS.ADMIN }]);
@@ -79,7 +88,7 @@ const KEYBOARDS = {
     keyboard: [
       [{ text: BUTTONS.ADD_CONFIG }, { text: BUTTONS.SUB_LIST }],
       [{ text: BUTTONS.SUB_CLIENTS }, { text: BUTTONS.SUB_STATS }],
-      [{ text: BUTTONS.BACK }]
+      [{ text: BUTTONS.BACK_USER }]
     ],
     resize_keyboard: true
   }
@@ -130,6 +139,10 @@ async function getAllStoredConfigs(env) {
   return all;
 }
 
+function isMenuButton(text) {
+  return Object.values(BUTTONS).includes(text);
+}
+
 // ======== Webhook Handler ========
 export async function handleWebhook(env, update) {
   if (update.callback_query) return handleCallback(env, update.callback_query);
@@ -137,7 +150,7 @@ export async function handleWebhook(env, update) {
   const message = update.message || {};
   const chatId = String(message.chat?.id || "");
   const text = message.text || "";
-  const isAdmin = chatId === env.ADMIN_CHAT_ID;
+  const isAdmin = chatId === String(env.ADMIN_CHAT_ID);
 
   if (!text) return;
 
@@ -147,8 +160,16 @@ export async function handleWebhook(env, update) {
   const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
   const fallbackProvider = settings.channelUsername || "VPN Config Bot";
 
-  const userState = await kvGet(env, `user_state_${chatId}`);
+  let userState = await kvGet(env, `user_state_${chatId}`);
   const menuState = await kvGet(env, `user_menu_state_${chatId}`, "MAIN");
+
+  // If a menu button is pressed, clear any pending state and proceed
+  if (isMenuButton(text) || text.startsWith("/")) {
+    if (userState) {
+      await kvSet(env, `user_state_${chatId}`, null);
+      userState = null;
+    }
+  }
 
   if (userState === "awaiting_config") {
     await kvSet(env, `user_state_${chatId}`, null);
@@ -168,9 +189,9 @@ export async function handleWebhook(env, update) {
       });
 
       await kvSet(env, "submissions", subs);
-      await sendTelegram(env, chatId, `✅ ${configs.length} config(s) submitted!\nSource: ${provider}`);
+      await sendTelegram(env, chatId, `✅ ${configs.length} config(s) submitted!\nSource: ${provider}`, KEYBOARDS.MAIN(isAdmin));
     } else {
-      await sendTelegram(env, chatId, "❌ No valid config found. Supported: vless://, vmess://, trojan://, ss://");
+      await sendTelegram(env, chatId, "❌ No valid config found. Submission cancelled.", KEYBOARDS.MAIN(isAdmin));
     }
     return;
   }
@@ -179,51 +200,66 @@ export async function handleWebhook(env, update) {
     await kvSet(env, `user_state_${chatId}`, null);
     await sendTelegram(env, chatId, "🚀 Starting broadcast...");
     const stats = await startBroadcast(env, text);
-    await sendTelegram(env, chatId, `✅ Broadcast complete!\nSent: ${stats.sent}\nFailed: ${stats.failed}`);
+    await sendTelegram(env, chatId, `✅ Broadcast complete!\nSent: ${stats.sent}\nFailed: ${stats.failed}`, KEYBOARDS.ADMIN_MAIN);
+    return;
+  }
+
+  if (userState === "sub_awaiting_config") {
+    await kvSet(env, `user_state_${chatId}`, null);
+    const configs = extractConfigs(text);
+    if (configs.length > 0) {
+      const subData = await kvGet(env, `sub_admin_data_${chatId}`);
+      if (subData) {
+        subData.configs = [...(subData.configs || []), ...configs].slice(-50);
+        await kvSet(env, `sub_admin_data_${chatId}`, subData);
+        await sendTelegram(env, chatId, `✅ Added ${configs.length} configs to your pool.`, KEYBOARDS.SUB_ADMIN);
+      }
+    } else {
+      await sendTelegram(env, chatId, "❌ No valid config found.", KEYBOARDS.SUB_ADMIN);
+    }
     return;
   }
 
   // --- Navigation Logic ---
   if (text === "/start" || text === BUTTONS.BACK_USER) {
     await kvSet(env, `user_menu_state_${chatId}`, "MAIN");
-    await sendTelegram(env, chatId, "🌐 *VPN Config Bot Pro*", KEYBOARDS.MAIN(isAdmin));
+    await sendTelegram(env, chatId, "🌐 *VPN Config Bot Pro*\n\nWelcome! Select an option from the menu below:", KEYBOARDS.MAIN(isAdmin));
     return;
   }
 
   if (text === BUTTONS.ADMIN && isAdmin) {
     await kvSet(env, `user_menu_state_${chatId}`, "ADMIN_MAIN");
-    await sendTelegram(env, chatId, "🔐 *Admin Panel*", KEYBOARDS.ADMIN_MAIN);
+    await sendTelegram(env, chatId, "🔐 *Admin Control Panel*", KEYBOARDS.ADMIN_MAIN);
     return;
   }
 
   if (text === BUTTONS.MANAGE_CONFIGS && isAdmin) {
     await kvSet(env, `user_menu_state_${chatId}`, "ADMIN_CONFIGS");
-    await sendTelegram(env, chatId, "🔰 *Manage Configs*", KEYBOARDS.ADMIN_CONFIGS);
+    await sendTelegram(env, chatId, "🔰 *Content Manager*", KEYBOARDS.ADMIN_CONFIGS);
     return;
   }
 
   if (text === BUTTONS.SETTINGS && isAdmin) {
     await kvSet(env, `user_menu_state_${chatId}`, "ADMIN_SETTINGS");
-    await sendTelegram(env, chatId, "⚙️ *Settings*", KEYBOARDS.ADMIN_SETTINGS);
+    await sendTelegram(env, chatId, "⚙️ *System Settings*", KEYBOARDS.ADMIN_SETTINGS);
     return;
   }
 
   if (text === BUTTONS.MY_SUB) {
     const stats = await kvGet(env, `user_stats_${chatId}`, { approved_count: 0 });
     if (stats.approved_count < 20 && !isAdmin) {
-      await sendTelegram(env, chatId, `❌ You need at least 20 approved configs to start your own subscription service.\nYour current count: ${stats.approved_count}`);
+      await sendTelegram(env, chatId, `❌ You need at least 20 approved configs to start your own subscription service.\n\nYour current approved count: ${stats.approved_count}`);
       return;
     }
     await kvSet(env, `user_menu_state_${chatId}`, "SUB_ADMIN");
-    const subData = await kvGet(env, `sub_admin_data_${chatId}`);
-    await sendTelegram(env, chatId, "💎 *Subscription Management*", KEYBOARDS.SUB_ADMIN);
+    await sendTelegram(env, chatId, "💎 *Subscription Service*", KEYBOARDS.SUB_ADMIN);
     return;
   }
 
   if (text === BUTTONS.BACK) {
     if (menuState === "ADMIN_CONFIGS" || menuState === "ADMIN_SETTINGS") {
       await kvSet(env, `user_menu_state_${chatId}`, "ADMIN_MAIN");
-      await sendTelegram(env, chatId, "🔐 *Admin Panel*", KEYBOARDS.ADMIN_MAIN);
+      await sendTelegram(env, chatId, "🔐 *Admin Control Panel*", KEYBOARDS.ADMIN_MAIN);
     } else {
       await kvSet(env, `user_menu_state_${chatId}`, "MAIN");
       await sendTelegram(env, chatId, "🌐 *VPN Config Bot Pro*", KEYBOARDS.MAIN(isAdmin));
@@ -232,27 +268,27 @@ export async function handleWebhook(env, update) {
   }
 
   // --- Command Logic ---
-  if (text === BUTTONS.CHECK || (text === "/check" && isAdmin)) {
-    await sendTelegram(env, chatId, "🔄 Fetching...");
+  if ((text === BUTTONS.CHECK || text === "/check") && isAdmin) {
+    await sendTelegram(env, chatId, "🔄 Starting scraper...");
     const result = await checkAndDistribute(env);
-    await sendTelegram(env, chatId, `✅ Done! New: ${result.new_configs}, Total: ${result.total}`);
+    await sendTelegram(env, chatId, `✅ Scrape complete!\nNew: ${result.new_configs}\nTotal active: ${result.total}`, KEYBOARDS.ADMIN_MAIN);
   } else if ((text === BUTTONS.CLEANUP || text === "/cleanup") && isAdmin) {
-    await sendTelegram(env, chatId, "🧹 Running cleanup...");
+    await sendTelegram(env, chatId, "🧹 Running storage cleanup...");
     const result = await cleanupConfigs(env);
-    await sendTelegram(env, chatId, `✅ Cleanup done!\nRemoved: ${result.removed}\nKept: ${result.kept}`);
+    await sendTelegram(env, chatId, `✅ Cleanup complete!\nRemoved: ${result.removed}\nKept: ${result.kept}`, KEYBOARDS.ADMIN_MAIN);
   } else if (text === BUTTONS.SUBMIT || text === "/submit") {
     await kvSet(env, `user_state_${chatId}`, "awaiting_config");
-    await sendTelegram(env, chatId, "📤 Send your V2Ray config now:");
+    await sendTelegram(env, chatId, "📤 Please send your V2Ray config(s) now:\n(VLESS, VMess, Trojan, or Shadowsocks)");
   } else if (text === BUTTONS.LATEST || text === "/latest") {
     const stored = await getAllStoredConfigs(env);
     const latest = stored.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 5);
     if (latest.length > 0) {
       for (const c of latest) {
         const msg = await formatMessage(env, c.config, c.test_result || {status: "unknown", message: "Unknown"}, c, chatId);
-        await sendTelegram(env, chatId, msg, configKeyboard(c.config, c.hash, chatId));
+        await sendTelegram(env, chatId, msg, await configKeyboard(env, c.config, c.hash, chatId));
       }
     } else {
-      await sendTelegram(env, chatId, "No configs available yet.");
+      await sendTelegram(env, chatId, "📭 No configs available in the database yet.");
     }
   } else if (text === BUTTONS.BEST || text === "/best") {
     const stored = await getAllStoredConfigs(env);
@@ -266,41 +302,40 @@ export async function handleWebhook(env, update) {
 
     for (const c of sorted) {
       const msg = await formatMessage(env, c.config, c.test_result || {status: "unknown", message: "Unknown"}, c, chatId);
-      await sendTelegram(env, chatId, msg, configKeyboard(c.config, c.hash, chatId));
+      await sendTelegram(env, chatId, msg, await configKeyboard(env, c.config, c.hash, chatId));
     }
   } else if ((text === BUTTONS.LINKS || text.startsWith("/add_link ")) && isAdmin) {
-    // If it's just the button, show the list. If it starts with /add_link, keep original logic.
     if (text === BUTTONS.LINKS) {
       const links = await kvGet(env, "source_links", []);
-      await sendTelegram(env, chatId, "📋 *Links:*\n" + links.map((l, i) => `${i + 1}. \`${l}\``).join("\n"));
+      await sendTelegram(env, chatId, "🔗 *Source Links:*\n\n" + (links.length ? links.map((l, i) => `${i + 1}. \`${l}\``).join("\n") : "None"), KEYBOARDS.ADMIN_CONFIGS);
       return;
     }
     const url = text.replace("/add_link ", "").trim();
     const links = await kvGet(env, "source_links", []);
     if (!links.includes(url)) { links.push(url); await kvSet(env, "source_links", links); }
-    await sendTelegram(env, chatId, `✅ Link added.`);
+    await sendTelegram(env, chatId, `✅ Link added.`, KEYBOARDS.ADMIN_CONFIGS);
   } else if (text.startsWith("/remove_link ") && isAdmin) {
     const url = text.replace("/remove_link ", "").trim();
     let links = await kvGet(env, "source_links", []);
     links = links.filter(l => l !== url);
     await kvSet(env, "source_links", links);
-    await sendTelegram(env, chatId, `✅ Link removed.`);
+    await sendTelegram(env, chatId, `✅ Link removed.`, KEYBOARDS.ADMIN_CONFIGS);
   } else if ((text === BUTTONS.CHANNELS || text.startsWith("/add_channel ")) && isAdmin) {
     if (text === BUTTONS.CHANNELS) {
       const ch = await kvGet(env, "channel_ids", []);
-      await sendTelegram(env, chatId, "📺 *Channels:*\n" + ch.map((c, i) => `${i + 1}. \`${c}\``).join("\n"));
+      await sendTelegram(env, chatId, "📺 *Distribution Channels:*\n\n" + (ch.length ? ch.map((c, i) => `${i + 1}. \`${c}\``).join("\n") : "None"), KEYBOARDS.ADMIN_CONFIGS);
       return;
     }
     const cid = text.replace("/add_channel ", "").trim();
     const channels = await kvGet(env, "channel_ids", []);
     if (!channels.includes(cid)) { channels.push(cid); await kvSet(env, "channel_ids", channels); }
-    await sendTelegram(env, chatId, `✅ Channel added.`);
+    await sendTelegram(env, chatId, `✅ Channel added.`, KEYBOARDS.ADMIN_CONFIGS);
   } else if (text.startsWith("/remove_channel ") && isAdmin) {
     const cid = text.replace("/remove_channel ", "").trim();
     let channels = await kvGet(env, "channel_ids", []);
     channels = channels.filter(c => c !== cid);
     await kvSet(env, "channel_ids", channels);
-    await sendTelegram(env, chatId, `✅ Channel removed.`);
+    await sendTelegram(env, chatId, `✅ Channel removed.`, KEYBOARDS.ADMIN_CONFIGS);
   } else if ((text === BUTTONS.STATUS || text === "/status") && isAdmin) {
     const links = await kvGet(env, "source_links", []);
     const channels = await kvGet(env, "channel_ids", []);
@@ -308,15 +343,15 @@ export async function handleWebhook(env, update) {
     const stored = await getAllStoredConfigs(env);
     const subs = await kvGet(env, "submissions", []);
     const pending = subs.filter(s => s.status === "pending").length;
-    await sendTelegram(env, chatId, `📊 *Status*\n\nLinks: ${links.length}\nChannels: ${channels.length}\nCache: ${cache.length}\nConfigs: ${stored.length}\nPending: ${pending}`);
+    await sendTelegram(env, chatId, `📊 *System Status*\n\n🔗 Sources: ${links.length}\n📺 Channels: ${channels.length}\n📦 Cache: ${cache.length}\n🚀 Active Configs: ${stored.length}\n⏳ Pending Reviews: ${pending}`, KEYBOARDS.ADMIN_CONFIGS);
   } else if (text === BUTTONS.TEMPLATES && isAdmin) {
     const templates = await kvGet(env, "message_templates", DEFAULT_TEMPLATES);
     const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
-    let msg = `📝 *Templates* (Active: \`${settings.activeTemplate}\`)\n\n`;
+    let msg = `📝 *Message Templates*\n(Active: \`${settings.activeTemplate}\`)\n\n`;
     for (const [key, val] of Object.entries(templates)) {
       msg += `🔹 *${key.toUpperCase()}*:\n\`\`\`\n${val}\n\`\`\`\n`;
     }
-    await sendTelegram(env, chatId, msg);
+    await sendTelegram(env, chatId, msg, KEYBOARDS.ADMIN_CONFIGS);
   } else if (text === BUTTONS.SUBMISSIONS && isAdmin) {
     const subs = await kvGet(env, "submissions", []);
     const pending = subs.filter(s => s.status === "pending").slice(0, 10);
@@ -324,30 +359,30 @@ export async function handleWebhook(env, update) {
       for (const s of pending) {
         const id = s.id || hashConfig(s.configs?.[0] || "");
         const configsPreview = (s.configs || []).slice(0, 3).map(c => `\`${c.substring(0, 50)}...\``).join("\n");
-        await sendTelegram(env, chatId, `📤 From @${s.username}\n📦 Total: ${s.configs?.length || 0} configs\nSource: ${s.provider || 'Unknown'}\n\n${configsPreview}`, {
+        await sendTelegram(env, chatId, `📤 Submission from @${s.username}\n📦 Count: ${s.configs?.length || 0}\nSource: ${s.provider || 'Unknown'}\n\n${configsPreview}`, {
           inline_keyboard: [[
             { text: "✅ Approve", callback_data: `approve_${id}` },
             { text: "❌ Reject", callback_data: `reject_${id}` }
           ]]
         });
       }
-    } else { await sendTelegram(env, chatId, "No pending submissions."); }
+    } else { await sendTelegram(env, chatId, "📭 No pending submissions.", KEYBOARDS.ADMIN_MAIN); }
   } else if (text === BUTTONS.BROADCAST && isAdmin) {
     await kvSet(env, `user_state_${chatId}`, "awaiting_broadcast");
-    await sendTelegram(env, chatId, "📢 Send the message you want to broadcast to ALL users:");
+    await sendTelegram(env, chatId, "📢 Please send the message you want to broadcast to ALL users:");
   } else if (text.startsWith("/broadcast ") && isAdmin) {
     const msg = text.replace("/broadcast ", "").trim();
     if (msg) {
       await sendTelegram(env, chatId, "🚀 Starting broadcast...");
       const stats = await startBroadcast(env, msg);
-      await sendTelegram(env, chatId, `✅ Broadcast complete!\nSent: ${stats.sent}\nFailed: ${stats.failed}`);
+      await sendTelegram(env, chatId, `✅ Broadcast complete!\nSent: ${stats.sent}\nFailed: ${stats.failed}`, KEYBOARDS.ADMIN_MAIN);
     }
   } else if (text === BUTTONS.APP_UPDATE && isAdmin) {
     const info = await kvGet(env, "app_update_info", { version: "1.0.0", description: "Default", link: "", force: false });
-    await sendTelegram(env, chatId, `📱 *App Update Info*\n\nVersion: \`${info.version}\`\nLink: \`${info.link}\`\nForce Update: \`${info.force}\`\nDescription: ${info.description}`);
+    await sendTelegram(env, chatId, `📱 *App Update Info*\n\nVersion: \`${info.version}\`\nLink: \`${info.link}\`\nForce Update: \`${info.force}\`\nDescription: ${info.description}`, KEYBOARDS.ADMIN_SETTINGS);
   } else if (text === BUTTONS.ANNOUNCEMENTS && isAdmin) {
     const ann = await kvGet(env, "app_announcement", { title: "", message: "", active: false });
-    await sendTelegram(env, chatId, `📢 *App Announcement*\n\nActive: \`${ann.active}\`\nTitle: ${ann.title}\nMessage: ${ann.message}`);
+    await sendTelegram(env, chatId, `📢 *Global Announcement*\n\nActive: \`${ann.active}\`\nTitle: ${ann.title}\nMessage: ${ann.message}`, KEYBOARDS.ADMIN_SETTINGS);
   } else if (text === BUTTONS.ADD_CONFIG) {
     await kvSet(env, `user_state_${chatId}`, "sub_awaiting_config");
     await sendTelegram(env, chatId, "📤 Send your personal V2Ray config(s) now:");
@@ -387,14 +422,14 @@ export async function handleWebhook(env, update) {
     const stored = await getAllStoredConfigs(env);
     const active = stored.filter(c => c.test_result?.status === "active").length;
     const totalLikes = stored.reduce((sum, c) => sum + (c.likes_count || 0), 0);
-    await sendTelegram(env, chatId, `📊 *Bot Statistics*\n\nTotal Configs: ${stored.length}\nActive Configs: ${active}\nTotal Community Likes: ${totalLikes}`);
+    await sendTelegram(env, chatId, `📊 *Bot Statistics*\n\n🚀 Total Configs: ${stored.length}\n✅ Active Now: ${active}\n👍 Community Likes: ${totalLikes}`, KEYBOARDS.MAIN(isAdmin));
   }
 }
 
 export async function handleCallback(env, callback) {
   const chatId = String(callback.message.chat.id);
   const data = callback.data || "";
-  const isAdmin = chatId === env.ADMIN_CHAT_ID;
+  const isAdmin = chatId === String(env.ADMIN_CHAT_ID);
   const userId = callback.from.id;
 
   await trackUser(env, userId);
@@ -424,7 +459,7 @@ export async function handleCallback(env, callback) {
               message_id: callback.message.message_id,
               text: newMsg,
               parse_mode: "Markdown",
-              reply_markup: configKeyboard(cfg.config, hash, chatId)
+              reply_markup: await configKeyboard(env, cfg.config, hash, chatId)
             })
           });
         } catch (e) { console.error("Edit error:", e); }
@@ -463,7 +498,7 @@ export async function handleCallback(env, callback) {
     const latest = stored.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 5);
     for (const c of latest) {
       const msg = await formatMessage(env, c.config, c.test_result || {status: "unknown", message: "Unknown"}, c, chatId);
-      await sendTelegram(env, chatId, msg, configKeyboard(c.config, c.hash, chatId));
+      await sendTelegram(env, chatId, msg, await configKeyboard(env, c.config, c.hash, chatId));
     }
     if (!latest.length) await sendTelegram(env, chatId, "No configs yet.");
   } else if (data === "best_rated") {
@@ -474,34 +509,34 @@ export async function handleCallback(env, callback) {
       .slice(0, 5);
     for (const c of sorted) {
       const msg = await formatMessage(env, c.config, c.test_result || {status: "unknown", message: "Unknown"}, c, chatId);
-      await sendTelegram(env, chatId, msg, configKeyboard(c.config, c.hash, chatId));
+      await sendTelegram(env, chatId, msg, await configKeyboard(env, c.config, c.hash, chatId));
     }
     if (!sorted.length) await sendTelegram(env, chatId, "No rated configs yet.");
   } else if (data === "bot_stats") {
     const stored = await getAllStoredConfigs(env);
     const active = stored.filter(c => c.test_result?.status === "active").length;
     const totalLikes = stored.reduce((sum, c) => sum + (c.likes_count || 0), 0);
-    await sendTelegram(env, chatId, `📊 Total: ${stored.length}\nActive: ${active}\nTotal Likes: ${totalLikes}`);
+    await sendTelegram(env, chatId, `📊 *Bot Statistics*\n\n🚀 Total: ${stored.length}\n✅ Active: ${active}\n👍 Likes: ${totalLikes}`);
   } else if (data === "admin_check_now" && isAdmin) {
-    await sendTelegram(env, chatId, "🔄 Fetching...");
+    await sendTelegram(env, chatId, "🔄 Starting scraper...");
     const result = await checkAndDistribute(env);
-    await sendTelegram(env, chatId, `✅ ${result.new_configs} new configs.`);
+    await sendTelegram(env, chatId, `✅ Done! ${result.new_configs} new configs.`);
   } else if (data === "admin_cleanup" && isAdmin) {
     await sendTelegram(env, chatId, "🧹 Cleaning up...");
     const result = await cleanupConfigs(env);
     await sendTelegram(env, chatId, `✅ Removed: ${result.removed}, Kept: ${result.kept}`);
   } else if (data === "admin_links" && isAdmin) {
     const links = await kvGet(env, "source_links", []);
-    await sendTelegram(env, chatId, "📋 *Links:*\n" + links.map((l, i) => `${i + 1}. \`${l}\``).join("\n"));
+    await sendTelegram(env, chatId, "🔗 *Source Links:*\n\n" + (links.length ? links.map((l, i) => `${i + 1}. \`${l}\``).join("\n") : "None"));
   } else if (data === "admin_channels" && isAdmin) {
     const ch = await kvGet(env, "channel_ids", []);
-    await sendTelegram(env, chatId, "📺 *Channels:*\n" + ch.map((c, i) => `${i + 1}. \`${c}\``).join("\n"));
+    await sendTelegram(env, chatId, "📺 *Distribution Channels:*\n\n" + (ch.length ? ch.map((c, i) => `${i + 1}. \`${c}\``).join("\n") : "None"));
   } else if (data === "admin_status" && isAdmin) {
     const links = await kvGet(env, "source_links", []);
     const channels = await kvGet(env, "channel_ids", []);
     const cache = await kvGet(env, "configs_cache", []);
     const stored = await getAllStoredConfigs(env);
-    await sendTelegram(env, chatId, `📊 Links: ${links.length}, Ch: ${channels.length}, Cache: ${cache.length}, Configs: ${stored.length}`);
+    await sendTelegram(env, chatId, `📊 *System Status*\n\nSources: ${links.length}\nChannels: ${channels.length}\nCache: ${cache.length}\nConfigs: ${stored.length}`);
   } else if (data === "admin_submissions" && isAdmin) {
     const subs = await kvGet(env, "submissions", []);
     const pending = subs.filter(s => s.status === "pending").slice(0, 10);

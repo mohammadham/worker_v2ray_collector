@@ -39,7 +39,7 @@ export async function processQueue(env) {
         } else {
           const votes = await getConfigVotes(env, item.hash);
           msg = await formatMessage(env, item.config, item.testResult, votes, ch);
-          keyboard = configKeyboard(item.config, item.hash, ch);
+          keyboard = await configKeyboard(env, item.config, item.hash, ch);
         }
         await sendTelegram(env, ch, msg, keyboard);
         await new Promise(r => setTimeout(r, 1000));
