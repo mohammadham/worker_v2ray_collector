@@ -1,6 +1,6 @@
 import { kvGet, kvSet, kvDelete } from '../utils/kv.js';
 import {
-  hashConfig, detectType, extractServer, testConfig, ALL_BUCKETS, getBucket
+  hashConfig, detectType, extractServer, testConfig, ALL_BUCKETS, getBucket, getFlag
 } from '../utils/vpn.js';
 import { voteConfig, calculateQualityScore } from '../services/voting.js';
 import {
