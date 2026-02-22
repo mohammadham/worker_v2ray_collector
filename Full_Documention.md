@@ -16,6 +16,7 @@ The **VPN Config Bot Pro** is a powerful Cloudflare Worker that automates the li
 - **Publish Queue**: Paces the distribution of new configurations to avoid flooding channels. Configurable interval and batch size.
 
 ### Telegram User Interface
+- **Persistent Reply Menu**: A context-aware reply keyboard at the bottom of the screen provides easy navigation between user and admin features. The menu updates dynamically based on the current step (e.g., Main Menu -> Settings).
 - **Monospaced Configs**: All configs are sent in a monospaced format, allowing users to tap and copy them instantly.
 - **Bundle Submissions**: If a user sends multiple configurations in one message, the bot groups them into a single "Bundle" for approval.
 - **Quality Reporting**: Users can report dead or slow configurations using the **👎 Report** button. High report counts negatively impact the config's Quality Score.
