@@ -249,7 +249,7 @@ export async function handleWebhook(env, update) {
     if (latest.length > 0) {
       for (const c of latest) {
         const msg = await formatMessage(env, c.config, c.test_result || {status: "unknown", message: "Unknown"}, c, chatId);
-        await sendTelegram(env, chatId, msg, configKeyboard(c.config, c.hash, chatId));
+        await sendTelegram(env, chatId, msg, await configKeyboard(env, c.config, c.hash, chatId));
       }
     } else {
       await sendTelegram(env, chatId, "No configs available yet.");
@@ -266,7 +266,7 @@ export async function handleWebhook(env, update) {
 
     for (const c of sorted) {
       const msg = await formatMessage(env, c.config, c.test_result || {status: "unknown", message: "Unknown"}, c, chatId);
-      await sendTelegram(env, chatId, msg, configKeyboard(c.config, c.hash, chatId));
+      await sendTelegram(env, chatId, msg, await configKeyboard(env, c.config, c.hash, chatId));
     }
   } else if ((text === BUTTONS.LINKS || text.startsWith("/add_link ")) && isAdmin) {
     // If it's just the button, show the list. If it starts with /add_link, keep original logic.
@@ -424,7 +424,7 @@ export async function handleCallback(env, callback) {
               message_id: callback.message.message_id,
               text: newMsg,
               parse_mode: "Markdown",
-              reply_markup: configKeyboard(cfg.config, hash, chatId)
+              reply_markup: await configKeyboard(env, cfg.config, hash, chatId)
             })
           });
         } catch (e) { console.error("Edit error:", e); }
@@ -463,7 +463,7 @@ export async function handleCallback(env, callback) {
     const latest = stored.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 5);
     for (const c of latest) {
       const msg = await formatMessage(env, c.config, c.test_result || {status: "unknown", message: "Unknown"}, c, chatId);
-      await sendTelegram(env, chatId, msg, configKeyboard(c.config, c.hash, chatId));
+      await sendTelegram(env, chatId, msg, await configKeyboard(env, c.config, c.hash, chatId));
     }
     if (!latest.length) await sendTelegram(env, chatId, "No configs yet.");
   } else if (data === "best_rated") {
@@ -474,7 +474,7 @@ export async function handleCallback(env, callback) {
       .slice(0, 5);
     for (const c of sorted) {
       const msg = await formatMessage(env, c.config, c.test_result || {status: "unknown", message: "Unknown"}, c, chatId);
-      await sendTelegram(env, chatId, msg, configKeyboard(c.config, c.hash, chatId));
+      await sendTelegram(env, chatId, msg, await configKeyboard(env, c.config, c.hash, chatId));
     }
     if (!sorted.length) await sendTelegram(env, chatId, "No rated configs yet.");
   } else if (data === "bot_stats") {

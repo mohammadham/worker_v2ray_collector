@@ -2,7 +2,8 @@ import { kvGet } from '../utils/kv.js';
 import { detectType, extractServer, getFlag } from '../utils/vpn.js';
 import { DEFAULT_TEMPLATES, DEFAULT_SETTINGS } from '../constants.js';
 
-export function configKeyboard(config, hash, channelInfo = null) {
+export async function configKeyboard(env, config, hash, channelInfo = null) {
+  const settings = await kvGet(env, "bot_settings", DEFAULT_SETTINGS);
   let shareUrl = `https://t.me/share/url?url=${encodeURIComponent(config)}`;
 
   if (channelInfo) {
@@ -11,10 +12,26 @@ export function configKeyboard(config, hash, channelInfo = null) {
     }
   }
 
-  return { inline_keyboard: [
-    [{ text: "👎 Report", callback_data: `dislike_${hash}` }],
-    [{ text: "📤 Share", url: shareUrl }, { text: "📱 Open", url: `https://t.me/share/url?url=${encodeURIComponent(config)}` }]
-  ]};
+  const rows = [];
+
+  // Conditionally add Report button
+  if (settings.enableReportButton !== false) {
+    rows.push([{ text: "👎 Report", callback_data: `dislike_${hash}` }]);
+  }
+
+  const secondRow = [{ text: "📤 Share", url: shareUrl }];
+
+  // Toggle between Open and QR Code
+  if (settings.enableQRButton) {
+    const qrUrl = `https://kissapi-qrcode.vercel.app/api/qrcode?cht=qr&chs=200x200&chl=${encodeURIComponent(config)}`;
+    secondRow.push({ text: "🖼️ QR Code", url: qrUrl });
+  } else {
+    secondRow.push({ text: "📱 Open", url: `https://t.me/share/url?url=${encodeURIComponent(config)}` });
+  }
+
+  rows.push(secondRow);
+
+  return { inline_keyboard: rows };
 }
 
 export async function formatMessage(env, config, testResult, votes = null, channelInfo = null, bundleConfigs = null, userAttr = null) {

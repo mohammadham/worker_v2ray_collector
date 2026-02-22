@@ -350,6 +350,8 @@ async function loadSettings(){
     '<div class="settings-item"><label>Queue Interval (min)</label><input type="number" id="setting-queueInterval" value="'+(s.queueIntervalMin||15)+'"></div>'+
     '<div class="settings-item"><label>Queue Batch Size</label><input type="number" id="setting-queueBatch" value="'+(s.queueBatchSize||1)+'"></div>'+
     '<div class="settings-item"><label>Main Channel Username (e.g. @MyChannel)</label><input id="setting-channelUsername" value="'+(s.channelUsername||"")+'"></div>'+
+    '<div class="settings-item"><label>Enable Report Button</label><select id="setting-enableReport"><option value="true" '+(s.enableReportButton!==false?'selected':'')+'>Enabled</option><option value="false" '+(s.enableReportButton===false?'selected':'')+'>Disabled</option></select></div>'+
+    '<div class="settings-item"><label>Enable QR Code Button</label><select id="setting-enableQR"><option value="true" '+(s.enableQRButton?'selected':'')+'>Enabled</option><option value="false" '+(s.enableQRButton?'':'selected')+'>Disabled</option></select></div>'+
     '<div class="settings-item"><label>Enable Queue</label><select id="setting-enableQueue"><option value="false" '+(s.enableQueue?'':'selected')+'>Disabled</option><option value="true" '+(s.enableQueue?'selected':'')+'>Enabled</option></select></div>';
 
   document.getElementById("enable-redirect").checked=s.enableRedirect||false;
@@ -365,6 +367,8 @@ async function saveSettings(){
     queueIntervalMin:parseInt(document.getElementById("setting-queueInterval").value),
     queueBatchSize:parseInt(document.getElementById("setting-queueBatch").value),
     channelUsername:document.getElementById("setting-channelUsername").value,
+    enableReportButton:document.getElementById("setting-enableReport").value === "true",
+    enableQRButton:document.getElementById("setting-enableQR").value === "true",
     enableQueue:document.getElementById("setting-enableQueue").value === "true"
   };
   await api("/settings","POST",{key:"all",value:settings});

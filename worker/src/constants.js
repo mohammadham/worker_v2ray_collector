@@ -27,5 +27,7 @@ export const DEFAULT_SETTINGS = {
   enableQueue: false,
   queueIntervalMin: 15,
   queueBatchSize: 1,
-  channelUsername: ""
+  channelUsername: "",
+  enableReportButton: true,
+  enableQRButton: true
 };

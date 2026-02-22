@@ -88,7 +88,7 @@ export async function checkAndDistribute(env) {
       for (const channel of channels) {
         try {
           const msg = await formatMessage(env, item.config, testResult, null, channel);
-          const keyboard = configKeyboard(item.config, item.hash, channel);
+          const keyboard = await configKeyboard(env, item.config, item.hash, channel);
           await sendTelegram(env, channel, msg, keyboard);
           await new Promise(r => setTimeout(r, 500));
         } catch (e) { console.error(`Send error to ${channel}:`, e); }
