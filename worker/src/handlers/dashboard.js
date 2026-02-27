@@ -353,6 +353,50 @@ export async function handleDashboardAPI(env, request, path) {
     return jsonResp({ tested: totalTested });
   }
 
+  // Sub-Admin Management
+  if (path === "/sub-admins" && method === "GET") {
+    const allUsers = await kvGet(env, "bot_users", []);
+    const subAdmins = [];
+    for (const chatId of allUsers) {
+      const subData = await kvGet(env, `sub_admin_data_${chatId}`);
+      if (subData) {
+        subAdmins.push({ chatId, ...subData });
+      }
+    }
+    return jsonResp({ subAdmins });
+  }
+
+  if (path.startsWith("/sub-admins/") && method === "GET") {
+    const chatId = path.replace("/sub-admins/", "");
+    const subData = await kvGet(env, `sub_admin_data_${chatId}`);
+    return subData ? jsonResp(subData) : jsonResp({ error: "Not found" }, 404);
+  }
+
+  if (path.startsWith("/sub-admins/") && method === "DELETE") {
+    const chatId = path.replace("/sub-admins/", "");
+    const subData = await kvGet(env, `sub_admin_data_${chatId}`);
+    if (subData) {
+      await kvDelete(env, `sub_admin_data_${chatId}`);
+      await kvDelete(env, `sub_lookup_admin_${subData.adminId}`);
+      // Also delete all client lookups for this sub-admin
+      if (subData.clients) {
+        for (const client of subData.clients) {
+          await kvDelete(env, `sub_lookup_client_${subData.adminId}-${client.clientId}`);
+        }
+      }
+      return jsonResp({ deleted: true });
+    }
+    return jsonResp({ error: "Not found" }, 404);
+  }
+
+  // Update Sub-Admin Data (Admins can edit their pools/clients)
+  if (path.startsWith("/sub-admins/") && method === "POST") {
+    const chatId = path.replace("/sub-admins/", "");
+    const body = await request.json();
+    await kvSet(env, `sub_admin_data_${chatId}`, body);
+    return jsonResp({ updated: true });
+  }
+
   // Test
   if (path === "/test" && method === "POST") {
     const { config } = await request.json();
