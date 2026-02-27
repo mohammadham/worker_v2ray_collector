@@ -16,8 +16,6 @@ The **VPN Config Bot Pro** is a powerful Cloudflare Worker that automates the li
 - **Publish Queue**: Paces the distribution of new configurations to avoid flooding channels. Configurable interval and batch size.
 
 ### Telegram User Interface
-- **Professional Persistent Reply Menu**: A context-aware reply keyboard provides easy navigation. Buttons are logically grouped (e.g., Latest/Best, Submit/Subscription) for a superior UX. The system ensures that pressing any menu button immediately clears any pending input states (like "Awaiting Config"), preventing users from getting "trapped" in a state.
-- **Admin Visibility**: The "🔐 Admin Panel" button is strictly visible only to the authorized administrator, ensuring a clean interface for regular users.
 - **Monospaced Configs**: All configs are sent in a monospaced format, allowing users to tap and copy them instantly.
 - **Bundle Submissions**: If a user sends multiple configurations in one message, the bot groups them into a single "Bundle" for approval.
 - **Quality Reporting**: Users can report dead or slow configurations using the **👎 Report** button. High report counts negatively impact the config's Quality Score.
@@ -36,54 +34,38 @@ The **VPN Config Bot Pro** is a powerful Cloudflare Worker that automates the li
 
 ## 3. System Architecture
 
-The project follows a modular, component-based architecture using ES Modules (ESM). The logic is organized into dedicated modules within the `worker/src/` directory, providing better maintainability and scalability.
-
-### Modular Structure:
-- **`worker/worker.js`**: The main entry point that handles routing and initializes the environment.
-- **`worker/src/handlers/`**:
-    - `bot.js`: Logic for handling Telegram webhook updates and callback queries.
-    - `dashboard.js`: Implementation of the Admin Dashboard REST API.
-    - `formatter.js`: Shared logic for formatting Telegram messages and keyboards.
-- **`worker/src/services/`**:
-    - `fetcher.js`: Orchestrates the scraping and testing of new configurations.
-    - `storage.js`: Manages KV persistence, deduplication, and automated cleanup.
-    - `voting.js`: Implements the quality scoring and community rating system.
-    - `queue.js`: Handles the delayed publication queue logic.
-- **`worker/src/utils/`**:
-    - `kv.js`: Optimized KV helpers with local in-memory caching.
-    - `telegram.js`: Rate-limited Telegram API client.
-    - `vpn.js`: Protocol-specific parsing (VLESS/VMess/Trojan/SS) and connectivity testing.
-- **`worker/src/templates/`**:
-    - `html.js`: Centralized storage for Dashboard and Portfolio UI templates.
-- **`worker/src/constants.js`**: Global configuration defaults and regex patterns.
-
-### Component Diagram:
-
 ```mermaid
 flowchart TB
-    subgraph "Cloudflare Worker Environment (ESM)"
+    subgraph "Cloudflare Worker Environment"
         direction TB
-        Entry[worker.js] --> Bot[handlers/bot.js]
-        Entry --> DashAPI[handlers/dashboard.js]
-        Entry --> PublicAPI[worker.js Logic]
+        WH[Webhook Handler] -->|callback| TG[Telegram Bot API]
+        SC[Scheduled Cron] -->|periodic| FnC[Fetch & Distribute]
+        FnC -->|store/retrieve| KV[(KV Namespace: VPN_CACHE)]
+        FnC -->|test| Test[Config Tester]
+        FnC -->|send| TG
 
-        Bot --> Formatter[handlers/formatter.js]
-        DashAPI --> Formatter
+        SUB[Submission Handler] -->|store| KV
+        SUB -->|approve| Publish[Publish to Channels]
 
-        Bot --> Services[services/*.js]
-        DashAPI --> Services
+        AdminAPI[Dashboard API] -->|CRUD| KV
+        AdminAPI -->|triggers| FnC
+        AdminAPI -->|triggers| Cleanup[Cleanup Job]
 
-        Services --> Utils[utils/*.js]
-        Utils --> KV[(KV: VPN_CACHE)]
+        DashUI[Dashboard HTML] -->|fetches| AdminAPI
 
-        SC[Scheduled Cron] --> Fetcher[services/fetcher.js]
+        Root[Root Path] -->|Logic| HTTPResponse[Redirect/Portfolio]
     end
 
     subgraph "External Systems"
-        TG[Telegram Bot API] <--> Bot
-        Sources[Source URLs] --> Fetcher
-        Admin[Admin Browser] <--> DashAPI
+        Sources[Source URLs] -->|HTTP GET| FnC
+        User[Telegram User] -->|commands/configs| WH
+        Channel[Telegram Channel] <--|formatted configs| TG
+        Admin[Admin] -->|web dashboard| DashUI
     end
+
+    KV -->|local cache| MemCache[In-Memory Cache (5s TTL)]
+    Test -->|DNS check| CF_DNS[Cloudflare DoH]
+    Test -->|TCP/HTTPS check| Target[VPN Server]
 ```
 
 ---
@@ -119,22 +101,16 @@ Over time, configurations may die or become slow. The cleanup task runs daily, c
 - **Testing**: Dual-stage testing (DNS followed by HTTP/HTTPS HEAD) ensures high accuracy of "Active" status.
 
 ### 5.3 Storage & Deduplication Policies
-- **Sharded Storage Architecture**: Configurations are sharded into **20 buckets** based on their protocol (`vless`, `vmess`, `trojan`, `ss`) and the first character of their hash (5 sub-groups per protocol).
-  - **Key Format**: `cfgs:{protocol}:{group}` (e.g., `cfgs:vless:1`).
-  - **Bucket Logic**: Chars `0-6` → G1, `7-d` → G2, `e-k` → G3, `l-r` → G4, `s-z` → G5.
-- **Smart Provider Tracking**: Each configuration stores a `provider` field, extracted from the source text or internal metadata (ps/hash). If no source is found, it defaults to the configured `channelUsername`.
-- **Country-Specific Hot-Path Indexing**: The system maintains an optimized index for each country (`top:country:{CC}`) containing the top 100 highest-quality active configurations. This allows for near-instant responses for location-based API queries.
-- **Response Caching Layer**: Public API endpoints (`/api/configs`, `/api/sub`) utilize a frequency-based cache in KV with a 5-minute TTL. Responses are cached based on request parameters, further reducing database load for high-traffic requests.
-- **Optimized Voting Storage**: Vote counts (`likes_count`, `dislikes_count`) and a FIFO queue of the last 20 voter IDs (`recent_voters`) are stored directly within each configuration object. This eliminates redundant KV subrequests when listing configurations.
-- **Storage Limit**: Each bucket maintains a strict limit of **100 configurations**, allowing for a total system capacity of **2,000 active configurations**.
-- **Smart Deduplication**: Configurations are compared based on their core connection parameters. Any text after the `#` symbol or the `ps` field in VMess is ignored during comparison.
-- **Auto-Cleanup Pipeline**: When a bucket reaches its 100-item limit, the bot performs a 6-stage cleanup on that specific shard:
+- **Storage Limit**: The bot maintains a strict limit of **1,000 configurations** in KV.
+- **Smart Deduplication**: Configurations are compared based on their core connection parameters (Host, Port, ID, Cipher). Any text after the `#` symbol or the `ps` field in VMess is ignored during comparison.
+- **Quality-Based Management**: Configurations with extremely low **Quality Scores** (due to multiple reports) are prioritized for removal.
+- **Auto-Cleanup Pipeline**: When the storage limit is reached, the bot performs a 6-stage cleanup:
   0.  **Quality Purge**: Remove configurations with a Quality Score below -200.
   1.  **Remove Dead**: Delete all configs marked as "dead".
   2.  **Age Check**: Delete configs older than **10 days**.
   3.  **Latency Check**: Delete configs with high latency (ping > 2000ms).
-  4.  **Proactive Testing**: Retest oldest configs in the bucket and remove those that fail.
-  5.  **FIFO**: Remove oldest configs if the bucket is still over the limit.
+  4.  **Proactive Testing**: Retest oldest configs, update their Quality Score, and remove those that fail.
+  5.  **FIFO**: Remove oldest configs if still over the limit.
 
 ### 5.4 Publish Queue Configuration
 Admins can enable the **Publish Queue** in the dashboard settings:
@@ -177,7 +153,7 @@ Users who contribute at least **20 approved configurations** to the main channel
 ---
 
 ## 7. Roadmap & Improvements
-- [x] **Geo-Location**: Integration with IP-API to show server location flags.
+- [ ] **Geo-Location**: Integration with IP-API to show server location flags.
 - [ ] **Durable Objects**: Advanced rate limiting for users with a paid Cloudflare plan.
 - [ ] **Multi-Protocol**: Future support for WireGuard and OpenVPN profiles.
 - [ ] **Advanced Metrics**: Visual charts for uptime and popularity trends.
@@ -203,13 +179,6 @@ The bot provides a REST API for management and integration. All dashboard endpoi
   - Batch: `{"votes": [{"hash": "...", "type": "like"}, ...]}`
 - **POST `/dashboard/api/settings`**: Update bot settings.
   - Body: `{"key": "all", "value": { ... }}`
-- **GET `/dashboard/api/app-update`**: Fetch current Android app update info.
-- **POST `/dashboard/api/app-update`**: Update Android app release info.
-  - Body: `{"version": "1.2.0", "description": "New features", "link": "https://...", "force": true}`
-- **POST `/dashboard/api/announcements`**: Update app announcements.
-  - Body: `{"title": "...", "message": "...", "active": true}`
-- **POST `/dashboard/api/broadcast`**: Send a message to all Telegram bot users.
-  - Body: `{"message": "..."}`
 
 ### Public Endpoints (No Auth)
 
@@ -244,31 +213,6 @@ The bot provides a REST API for management and integration. All dashboard endpoi
       { "country": "Germany", "countryCode": "DE", "count": 15 },
       { "country": "United States", "countryCode": "US", "count": 8 }
     ]
-    ```
-
-- **GET `/api/app-update`**
-  - Returns latest Android app version and download information.
-  - Example Response:
-    ```json
-    {
-      "version": "1.2.0",
-      "description": "Bug fixes and performance improvements",
-      "link": "https://example.com/app.apk",
-      "force": false,
-      "updated_at": "2024-03-20T12:00:00.000Z"
-    }
-    ```
-
-- **GET `/api/announcements`**
-  - Returns the current active app announcement.
-  - Example Response:
-    ```json
-    {
-      "title": "New Server added!",
-      "message": "We have added 5 new servers in Germany. Enjoy!",
-      "active": true,
-      "updated_at": "2024-03-20T12:00:00.000Z"
-    }
     ```
 
 ---
