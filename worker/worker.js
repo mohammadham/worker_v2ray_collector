@@ -63,7 +63,7 @@ async function setCacheResponse(env, key, data, ttl = 300) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
@@ -96,7 +96,7 @@ export default {
     if (url.pathname === "/webhook" && request.method === "POST") {
       try {
         const update = await request.json();
-        await handleWebhook(env, update);
+        await handleWebhook(env, update, ctx);
         return new Response("OK");
       } catch (e) {
         return new Response(`Error: ${e.message}`, { status: 500 });

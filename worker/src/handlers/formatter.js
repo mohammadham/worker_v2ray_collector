@@ -76,7 +76,14 @@ export async function formatMessage(env, config, testResult, votes = null, chann
   const server = host ? `${host}:${port}` : "Unknown";
   const emoji = testResult.status === "active" ? "✅" : testResult.status === "dns_only" ? "⚠️" : "❌";
 
-  const rating = votes ? `👍 ${votes.likes.length} | 👎 ${votes.dislikes.length}` : "N/A";
+  // Support both old votes object and new sharded config object
+  let likes = 0;
+  let dislikes = 0;
+  if (votes) {
+    likes = votes.likes_count !== undefined ? votes.likes_count : (votes.likes || []).length;
+    dislikes = votes.dislikes_count !== undefined ? votes.dislikes_count : (votes.dislikes || []).length;
+  }
+  const rating = votes ? `👍 ${likes} | 👎 ${dislikes}` : "N/A";
   const flag = getFlag(testResult.countryCode);
   const location = `${flag} ${testResult.country || "Unknown"}`;
 
