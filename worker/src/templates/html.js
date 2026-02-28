@@ -87,6 +87,7 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 <div class="tab" onclick="showTab('settings')">⚙️ Settings</div>
 <div class="tab" onclick="showTab('app-update')">📱 App Update</div>
 <div class="tab" onclick="showTab('announcements')">📢 Announcements</div>
+<div class="tab" onclick="showTab('sub-admins')">💎 Sub-Admins</div>
 <div class="tab" onclick="showTab('broadcast')">✉️ Broadcast</div>
 <div class="tab" onclick="showTab('actions')">⚡ Actions</div>
 </div>
@@ -129,6 +130,19 @@ button{padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-size
 <div id="templates-list"></div>
 </div>
 <div id="submissions" class="section glass"><div id="submissions-list"></div></div>
+<div id="sub-admins" class="section glass">
+<div id="sub-admins-list"></div>
+<div id="sub-admin-details" style="display:none;margin-top:20px;padding-top:20px;border-top:1px solid rgba(255,255,255,.1)">
+<h3 id="details-title">Sub-Admin Details</h3>
+<div style="margin:16px 0">
+<label>Personal Config Pool:</label>
+<textarea id="sub-configs-pool" style="height:150px;margin-top:8px"></textarea>
+</div>
+<div id="sub-clients-list"></div>
+<button class="btn-primary" onclick="saveSubAdminData()">Save All Changes</button>
+<button class="btn-sm" style="margin-top:10px" onclick="hideSubAdminDetails()">Close Details</button>
+</div>
+</div>
 <div id="settings" class="section glass">
 <div class="settings-grid" id="settings-grid"></div>
 <button class="btn-primary" onclick="saveSettings()">Save Settings</button>
@@ -242,7 +256,7 @@ async function showDashboard(){
     await Promise.all([
       loadStats(), loadLinks(), loadChannels(), loadConfigs(),
       loadTemplates(), loadSubmissions(), loadSettings(), loadAppUpdate(),
-      loadAnnouncements()
+      loadAnnouncements(), loadSubAdmins()
     ]);
     hideLoading();
   } catch (e) {
@@ -338,6 +352,71 @@ async function loadSubmissions(){
 }
 async function approveSub(id){await api("/submissions/approve","POST",{id});loadSubmissions();loadStats();}
 async function rejectSub(id){await api("/submissions/reject","POST",{id});loadSubmissions();loadStats();}
+
+let currentSubAdminChatId = "";
+async function loadSubAdmins(){
+  const d=await api("/sub-admins");
+  document.getElementById("sub-admins-list").innerHTML=(d.subAdmins||[]).map(s=>
+    \`<div class="list-item">
+      <div>
+        <span style="color:#00d4ff;font-weight:600">Admin ID: \${s.adminId}</span>
+        <span style="color:#888;font-size:12px;margin-right:10px">User: \${s.chatId}</span>
+      </div>
+      <div>
+        <button class="btn-sm" onclick="viewSubAdmin('\${s.chatId}')">View Details</button>
+        <button class="btn-danger" onclick="deleteSubAdmin('\${s.chatId}')">Revoke</button>
+      </div>
+    </div>\`
+  ).join("")||"<p>No sub-admins found.</p>";
+}
+async function viewSubAdmin(chatId){
+  currentSubAdminChatId = chatId;
+  const s=await api("/sub-admins/"+chatId);
+  document.getElementById("sub-admin-details").style.display="block";
+  document.getElementById("details-title").textContent="Sub-Admin Details (User: "+chatId+")";
+  document.getElementById("sub-configs-pool").value=(s.configs||[]).join("\\n");
+  document.getElementById("sub-clients-list").innerHTML=(s.clients||[]).map((c,i)=>
+    \`<div class="config-card">
+      <div style="display:flex;justify-content:space-between">
+        <span>Client: <b>\${c.clientId}</b></span>
+        <button class="btn-danger" style="padding:4px 8px" onclick="removeSubClient(\${i})">Remove</button>
+      </div>
+      <div style="font-size:12px;margin-top:8px">
+        Limit: <input type="number" id="cli-vol-\${i}" value="\${c.limitVol}" style="width:60px;margin-bottom:0"> GB |
+        Acts: <input type="number" id="cli-act-\${i}" value="\${c.limitAct}" style="width:60px;margin-bottom:0">
+      </div>
+      <div style="font-size:11px;color:#888;margin-top:4px">
+        Used: \${c.usedVol?.toFixed(2)||0} GB | Acts: \${c.usedAct||0}
+      </div>
+    </div>\`
+  ).join("");
+  window.currentSubAdminData = s;
+}
+function hideSubAdminDetails(){document.getElementById("sub-admin-details").style.display="none"}
+async function removeSubClient(idx){
+  if(confirm("Remove this client?")){
+    window.currentSubAdminData.clients.splice(idx,1);
+    viewSubAdmin(currentSubAdminChatId);
+  }
+}
+async function saveSubAdminData(){
+  const s = window.currentSubAdminData;
+  s.configs = document.getElementById("sub-configs-pool").value.split("\\n").filter(l=>l.trim());
+  (s.clients||[]).forEach((c,i)=>{
+    c.limitVol = parseInt(document.getElementById("cli-vol-"+i).value);
+    c.limitAct = parseInt(document.getElementById("cli-act-"+i).value);
+  });
+  await api("/sub-admins/"+currentSubAdminChatId,"POST",s);
+  alert("Sub-admin data updated!");
+  loadSubAdmins();
+}
+async function deleteSubAdmin(chatId){
+  if(confirm("Are you sure you want to revoke sub-admin status? This will delete their configs and clients.")){
+    await api("/sub-admins/"+chatId,"DELETE");
+    loadSubAdmins();
+    hideSubAdminDetails();
+  }
+}
 async function loadSettings(){
   const d=await api("/settings");
   const s=d.settings||{};

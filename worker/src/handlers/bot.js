@@ -47,7 +47,8 @@ const BUTTONS = {
 
   // Navigation
   BACK: "🔙 Back",
-  BACK_USER: "🏠 Home (User Menu)"
+  BACK_USER: "🏠 Home (User Menu)",
+  CANCEL: "❌ Cancel & Return"
 };
 
 const KEYBOARDS = {
@@ -90,6 +91,10 @@ const KEYBOARDS = {
       [{ text: BUTTONS.SUB_CLIENTS }, { text: BUTTONS.SUB_STATS }],
       [{ text: BUTTONS.BACK_USER }]
     ],
+    resize_keyboard: true
+  },
+  CANCEL: {
+    keyboard: [[{ text: BUTTONS.CANCEL }]],
     resize_keyboard: true
   }
 };
@@ -164,10 +169,19 @@ export async function handleWebhook(env, update, ctx = null) {
   const menuState = await kvGet(env, `user_menu_state_${chatId}`, "MAIN");
 
   // If a menu button is pressed, clear any pending state and proceed
-  if (isMenuButton(text) || text.startsWith("/")) {
+  if (isMenuButton(text) || text.startsWith("/") || text === BUTTONS.CANCEL) {
     if (userState) {
       await kvSet(env, `user_state_${chatId}`, null);
       userState = null;
+      if (text === BUTTONS.CANCEL) {
+        await kvSet(env, `user_menu_state_${chatId}`, "MAIN");
+        await sendTelegram(env, chatId, "🏠 Returned to main menu.", KEYBOARDS.MAIN(isAdmin));
+        return;
+      }
+    } else if (text === BUTTONS.CANCEL) {
+      await kvSet(env, `user_menu_state_${chatId}`, "MAIN");
+      await sendTelegram(env, chatId, "🌐 *VPN Config Bot Pro*", KEYBOARDS.MAIN(isAdmin));
+      return;
     }
   }
 
@@ -308,7 +322,7 @@ export async function handleWebhook(env, update, ctx = null) {
     await sendTelegram(env, chatId, `✅ Cleanup complete!\nRemoved: ${result.removed}\nKept: ${result.kept}`, KEYBOARDS.ADMIN_MAIN);
   } else if (text === BUTTONS.SUBMIT || text === "/submit") {
     await kvSet(env, `user_state_${chatId}`, "awaiting_config");
-    await sendTelegram(env, chatId, "📤 Please send your V2Ray config(s) now:\n(VLESS, VMess, Trojan, or Shadowsocks)");
+    await sendTelegram(env, chatId, "📤 Please send your V2Ray config(s) now:\n(VLESS, VMess, Trojan, or Shadowsocks)", KEYBOARDS.CANCEL);
   } else if (text === BUTTONS.LATEST || text === "/latest") {
     const process = async () => {
       const stored = await getAllStoredConfigs(env);
@@ -411,7 +425,7 @@ export async function handleWebhook(env, update, ctx = null) {
     } else { await sendTelegram(env, chatId, "📭 No pending submissions.", KEYBOARDS.ADMIN_MAIN); }
   } else if (text === BUTTONS.BROADCAST && isAdmin) {
     await kvSet(env, `user_state_${chatId}`, "awaiting_broadcast");
-    await sendTelegram(env, chatId, "📢 Please send the message you want to broadcast to ALL users:");
+    await sendTelegram(env, chatId, "📢 Please send the message you want to broadcast to ALL users:", KEYBOARDS.CANCEL);
   } else if (text.startsWith("/broadcast ") && isAdmin) {
     const msg = text.replace("/broadcast ", "").trim();
     if (msg) {
@@ -427,7 +441,7 @@ export async function handleWebhook(env, update, ctx = null) {
     await sendTelegram(env, chatId, `📢 *Global Announcement*\n\nActive: \`${ann.active}\`\nTitle: ${ann.title}\nMessage: ${ann.message}`, KEYBOARDS.ADMIN_SETTINGS);
   } else if (text === BUTTONS.ADD_CONFIG) {
     await kvSet(env, `user_state_${chatId}`, "sub_awaiting_config");
-    await sendTelegram(env, chatId, "📤 Send your personal V2Ray config(s) now:");
+    await sendTelegram(env, chatId, "📤 Send your personal V2Ray config(s) now:", KEYBOARDS.CANCEL);
   } else if (text === BUTTONS.SUB_LIST) {
     const subData = await kvGet(env, `sub_admin_data_${chatId}`);
     if (subData && subData.configs?.length) {
@@ -463,7 +477,7 @@ export async function handleWebhook(env, update, ctx = null) {
     if (subData) {
       const totalUsed = (subData.clients || []).reduce((sum, c) => sum + (c.usedVol || 0), 0);
       const msg = `📊 *Service Stats*\n\nAdmin ID: \`${subData.adminId}\`\nConfigs: ${subData.configs?.length || 0}\nClients: ${subData.clients?.length || 0}\nTotal Traffic: ${totalUsed.toFixed(2)} GB`;
-      await sendTelegram(env, chatId, msg);
+      await sendTelegram(env, chatId, msg, KEYBOARDS.SUB_ADMIN);
     }
   } else if (text === BUTTONS.HELP || text === "/help") {
     await sendTelegram(env, chatId, "ℹ️ *Help & Info*\n\n- This bot provides high-quality V2Ray configurations.\n- Use the menu below to get the latest or best-rated configs.\n- Tap a config to copy it instantly.\n- You can submit your own configs to help the community.");
@@ -533,7 +547,7 @@ export async function handleCallback(env, callback, ctx = null) {
     await sendTelegram(env, chatId, "📤 Send your V2Ray config now:");
   } else if (data === "sub_add_client") {
     await kvSet(env, `user_state_${chatId}`, "sub_awaiting_limits");
-    await sendTelegram(env, chatId, "➕ Enter limits for the new client (VolumeGB, MaxDevices):\nExample: `10, 2` (10GB and 2 Devices)");
+    await sendTelegram(env, chatId, "➕ Enter limits for the new client (VolumeGB, MaxDevices):\nExample: `10, 2` (10GB and 2 Devices)", KEYBOARDS.CANCEL);
   } else if (data === "user_subscription") {
     const stats = await kvGet(env, `user_stats_${chatId}`, { approved_count: 0 });
     if (stats.approved_count < 20 && !isAdmin) {
